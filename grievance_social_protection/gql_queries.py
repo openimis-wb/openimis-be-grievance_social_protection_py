@@ -421,8 +421,6 @@ class GrievanceTypeConfigurationGQLType(ObjectType):
     # Enhanced fields
     grievance_categories_hierarchical = graphene.List(GrievanceCategoryGQLType)
     grievance_flags_detailed = graphene.List(GrievanceFlagGQLType)
-    accessible_categories = graphene.List(graphene.String)
-    accessible_flags = graphene.List(graphene.String)
 
     def resolve_grievance_types(self, info):
         # Return accessible categories in flat format for backward compatibility
