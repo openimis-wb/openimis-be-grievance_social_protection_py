@@ -134,9 +134,6 @@ Resolution times are determined in the following order:
 ```json
 {
   "resolution_times": "5,0",  // Global default: 5 days
-  "default_resolution": {     // Legacy configuration (still supported)
-    "feedback": "7,0"
-  },
   "grievance_types": [
     {
       "name": "complaint",
@@ -210,7 +207,7 @@ The `visible_fields` feature controls field visibility for users with `restricte
 
 ### Flags Configuration
 
-Similarly, flags support both simple and enhanced formats:
+Similarly, flags support both simple and enhanced formats (with the exception that flags do not support nested children):
 
 #### Simple Format
 ```json
