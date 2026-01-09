@@ -36,7 +36,7 @@ class TicketService(BaseService):
     @register_service_signal('ticket_service.update')
     def update(self, obj_data):
         self._get_content_type(obj_data)
-        self._validate_access_control(obj_data)
+        self._validate_access_control(obj_data, 'update')
         self._apply_category_defaults(obj_data)
         resolution_error = validate_resolution(obj_data)
         if resolution_error:
@@ -90,15 +90,13 @@ class TicketService(BaseService):
             new_ticket_code = f'GRS{last_ticket_code_numeric + 1:08}'
             obj_data['code'] = new_ticket_code
     
-    def _validate_access_control(self, obj_data):
+    def _validate_access_control(self, obj_data, access_type: str = 'create'):
         """Validate user has permission to use selected category and flags"""
         category = obj_data.get('category')
         flags = obj_data.get('flags')
-        
-        try:
-            GrievanceAccessControl.validate_ticket_access(self.user, category, flags)
-        except PermissionDenied as e:
-            raise ValidationError(str(e))
+
+        GrievanceAccessControl.validate_ticket_access(self.user, category, flags, access_type)
+
     
     def _apply_category_defaults(self, obj_data):
         """Apply category defaults (flags, priority) if not already set"""

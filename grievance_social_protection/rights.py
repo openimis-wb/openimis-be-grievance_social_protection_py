@@ -77,24 +77,19 @@ class GrievanceRightsManager:
                 item_info['generated_rights'][perm_type] = perm.id
                 logger.info(f"Using existing permission: {codename} (ID: {perm.id})")
             else:
-                # Generate new ID following suffix pattern
-                try:
-                    new_id = cls._get_next_available_id(perm_type, used_ids)
-                    
-                    # Create new permission
-                    perm = Permission.objects.create(
-                        id=new_id,
-                        codename=codename,
-                        name=permission_name,
-                        content_type=ct
-                    )
-                    
-                    item_info['generated_rights'][perm_type] = perm.id
-                    used_ids.add(new_id)
-                    logger.info(f"Created new permission: {codename} (ID: {new_id})")
-                except ValueError as e:
-                    logger.error(f"Failed to create permission {codename}: {e}")
-                    continue
+                new_id = cls._get_next_available_id(perm_type, used_ids)
+                
+                # Create new permission
+                perm = Permission.objects.create(
+                    id=new_id,
+                    codename=codename,
+                    name=permission_name,
+                    content_type=ct
+                )
+                
+                item_info['generated_rights'][perm_type] = perm.id
+                used_ids.add(new_id)
+                logger.info(f"Created new permission: {codename} (ID: {new_id})")
             
             all_rights[right_name] = item_info['generated_rights'][perm_type]
 
