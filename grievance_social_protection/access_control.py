@@ -1,3 +1,4 @@
+import json
 import logging
 import re
 from django.core.exceptions import PermissionDenied
@@ -44,12 +45,40 @@ class GrievanceAccessControl:
 
     @staticmethod
     def parse_flags(flags):
-        """Parse flags from string or list format to list."""
+        """
+        Parse flags to a list of flag names.
+
+        Accepts a list, a space-separated string ('A B') or a JSON array
+        string ('["A", "B"]'). A string that starts with '[' but is not a
+        JSON array is split on whitespace.
+        """
         if not flags:
             return []
         if isinstance(flags, str):
+            stripped = flags.strip()
+            if stripped.startswith('['):
+                try:
+                    parsed = json.loads(stripped)
+                except ValueError:
+                    parsed = None
+                if isinstance(parsed, list):
+                    return [str(flag).strip() for flag in parsed if str(flag).strip()]
             return flags.split()
         return list(flags)
+
+    @staticmethod
+    def _flag_stored_q(flag):
+        """
+        Q matching tickets whose stored flags contain the given flag, in
+        either encoding accepted by parse_flags.
+        """
+        space_separated = Q(flags__regex=r'(^| )' + re.escape(flag) + r'( |$)')
+        # A JSON array element is a quoted string; its body may be stored with
+        # or without \u escapes, and parse_flags strips surrounding blanks.
+        bodies = {json.dumps(flag)[1:-1], json.dumps(flag, ensure_ascii=False)[1:-1]}
+        alternatives = '|'.join(re.escape(body) for body in sorted(bodies))
+        json_array = Q(flags__regex=r'^\s*\[.*"\s*(' + alternatives + r')\s*"')
+        return space_separated | json_array
 
     @classmethod
     def _check_access(cls, user, name, access_type, config_attr):
@@ -290,12 +319,10 @@ class GrievanceAccessControl:
                 if flag_info.get('generated_rights') and not cls.can_view_flag(user, flag_name)
             ]
 
-            # Exclude tickets with completely restricted flags using whole-word matching.
+            # Exclude tickets carrying a completely restricted flag, whole-token match.
             # Uses POSIX-compatible patterns (no lookbehind) for PostgreSQL compatibility.
             for flag in restricted_flags:
-                queryset = queryset.exclude(
-                    flags__regex=r'(^| )' + re.escape(flag) + r'( |$)'
-                )
+                queryset = queryset.exclude(cls._flag_stored_q(flag))
 
         return queryset
 
