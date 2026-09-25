@@ -8,6 +8,7 @@ from graphene.test import Client
 from core.datetimes.ad_datetime import datetime
 from core.models import User
 from core.models.openimis_graphql_test_case import openIMISGraphQLTestCase, BaseTestContext
+from core.test_helpers import create_test_interactive_user, create_test_technical_user
 from grievance_social_protection.models import Comment
 from grievance_social_protection.schema import Query, Mutation
 from grievance_social_protection.tests.test_helpers import create_ticket, create_test_grievance_user
@@ -29,7 +30,7 @@ query {
 
 
 class GQLCommentCommenterFieldsTestCase(openIMISGraphQLTestCase):
-    """commenterFirstName/LastName/Dob resolve to null, without error, when the commenter row is absent."""
+    """commenterFirstName/LastName/Dob resolve from the commenter row, and to null, without error, when it is absent."""
 
     @classmethod
     def setUpClass(cls):
@@ -46,7 +47,13 @@ class GQLCommentCommenterFieldsTestCase(openIMISGraphQLTestCase):
         cls.comment_null_id = cls._create_comment('null id', user_type, None)
         cls.comment_missing_row = cls._create_comment('missing row', individual_type, str(uuid4()))
         cls.comment_individual = cls._create_comment('individual', individual_type, str(cls.individual.id))
-        cls.comment_user = cls._create_comment('user', user_type, str(cls.user.id))
+        cls.named_user = create_test_interactive_user(
+            username='commenter_named_user',
+            custom_props={'other_names': 'Recette plaintes', 'last_name': 'Operateur de terrain'},
+        )
+        cls.technical_user = create_test_technical_user(username='commenter_technical_user')
+        cls.comment_user = cls._create_comment('user', user_type, str(cls.named_user.id))
+        cls.comment_technical_user = cls._create_comment('technical user', user_type, str(cls.technical_user.id))
 
         cls.gql_client = Client(Schema(query=Query, mutation=Mutation))
         cls.gql_context = BaseTestContext(cls.user)
@@ -84,8 +91,14 @@ class GQLCommentCommenterFieldsTestCase(openIMISGraphQLTestCase):
         self.assertEqual(node['commenterLastName'], 'CommenterLN')
         self.assertEqual(node['commenterDob'], '1990-01-02')
 
-    def test_user_commenter_resolves_to_null(self):
+    def test_user_commenter_resolves_names(self):
         node = self._commenter_fields(self.comment_user)
+        self.assertEqual(node['commenterFirstName'], 'Recette plaintes')
+        self.assertEqual(node['commenterLastName'], 'Operateur de terrain')
+        self.assertIsNone(node['commenterDob'])
+
+    def test_user_commenter_without_interactive_user_resolves_to_null(self):
+        node = self._commenter_fields(self.comment_technical_user)
         self.assertIsNone(node['commenterFirstName'])
         self.assertIsNone(node['commenterLastName'])
         self.assertIsNone(node['commenterDob'])
