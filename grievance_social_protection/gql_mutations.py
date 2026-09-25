@@ -2,6 +2,7 @@ import graphene
 
 from core.gql.gql_mutations.base_mutation import BaseHistoryModelCreateMutationMixin, BaseMutation, \
     BaseHistoryModelUpdateMutationMixin, BaseHistoryModelDeleteMutationMixin
+from core.models import User
 from core.schema import OpenIMISMutation
 from .models import Ticket, TicketMutation, Comment
 
@@ -10,7 +11,6 @@ from .apps import TicketConfig
 from django.utils.translation import gettext_lazy as _
 
 from .services import TicketService, CommentService
-from .validations import user_associated_with_ticket
 
 
 class CreateTicketInputType(OpenIMISMutation.Input):
@@ -141,7 +141,10 @@ class CreateCommentMutation(BaseHistoryModelCreateMutationMixin, BaseMutation):
         super()._validate_mutation(user, **data)
         if user.has_perms(TicketConfig.gql_mutation_delete_tickets_perms):
             return
-        if user_associated_with_ticket(user):
+        # Without the bypass right, only the staff attending this ticket.
+        ticket_id = data.get('ticket_id')
+        if ticket_id and isinstance(user, User) and Ticket.objects.filter(
+                id=ticket_id, attending_staff_id=user.id).exists():
             return
         raise ValidationError("mutation.authentication_required")
 
