@@ -139,6 +139,16 @@ class GrievanceAccessControl:
         return user.has_perm(str(required_right))
 
     @classmethod
+    def _holds_generated_right(cls, user, name, access_type, config_attr):
+        """True when the category/flag has a right generated for `access_type`
+        and the user holds it. No fallback to the module's base rights."""
+        if not user or user.is_anonymous:
+            return False
+        processed = getattr(TicketConfig, config_attr, {}) or {}
+        right = processed.get(name, {}).get('generated_rights', {}).get(access_type)
+        return bool(right) and user.has_perm(str(right))
+
+    @classmethod
     def check_category_access(cls, user, category_name, access_type=PERM_READ):
         return cls._check_access(user, category_name, access_type, 'processed_categories')
 
@@ -185,9 +195,13 @@ class GrievanceAccessControl:
             str: 'full', 'read', 'restricted', or 'none'
         """
 
-        def evaluate_access(check_func, name, has_restrictions_func):
+        def evaluate_access(check_func, name, has_restrictions_func, config_attr):
             """
             Evaluate access level for a single category or flag.
+
+            'full' requires a create, update or delete right generated for the
+            item itself; the module's base ticket rights do not raise a user
+            above 'read'.
 
             Returns:
                 str: 'full', 'read', 'restricted', 'none', or None (no restrictions)
@@ -195,7 +209,8 @@ class GrievanceAccessControl:
             if not has_restrictions_func(name):
                 return None  # No restrictions
 
-            if any(check_func(user, name, t) for t in (cls.PERM_CREATE, cls.PERM_UPDATE, cls.PERM_DELETE)):
+            if any(cls._holds_generated_right(user, name, t, config_attr)
+                   for t in (cls.PERM_CREATE, cls.PERM_UPDATE, cls.PERM_DELETE)):
                 return cls.ACCESS_FULL
             if check_func(user, name, cls.PERM_READ):
                 return cls.ACCESS_READ
@@ -218,7 +233,8 @@ class GrievanceAccessControl:
         category_access = evaluate_access(
             cls.check_category_access,
             category_name,
-            cls.has_category_restrictions
+            cls.has_category_restrictions,
+            'processed_categories',
         ) if category_name else None
 
         # Evaluate flag access (most restrictive across all flags)
@@ -229,7 +245,8 @@ class GrievanceAccessControl:
                 level = evaluate_access(
                     cls.check_flag_access,
                     flag,
-                    cls.has_flag_restrictions
+                    cls.has_flag_restrictions,
+                    'processed_flags',
                 )
                 if level is not None:
                     flag_accesses.append(level)
