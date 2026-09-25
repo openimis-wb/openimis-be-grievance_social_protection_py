@@ -7,7 +7,7 @@ from django.db import models
 from graphene import ObjectType
 from graphene_django import DjangoObjectType
 from django.contrib.contenttypes.models import ContentType
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
 from django.utils.translation import gettext as _
 
 from core.gql_queries import UserGQLType
@@ -366,52 +366,34 @@ class CommentGQLType(DjangoObjectType):
         return model_obj_to_json(root.commenter) if root.commenter else None
 
     @staticmethod
+    def _commenter_attribute(root, attribute):
+        """Return an attribute of an individual or beneficiary commenter; None when the commenter row is absent."""
+        if not root.commenter_type or not root.commenter_id:
+            return None
+        try:
+            model_object = root.commenter_type.get_object_for_this_type(pk=root.commenter_id)
+        except ObjectDoesNotExist:
+            return None
+        if root.commenter_type.name == 'individual':
+            return getattr(model_object, attribute)
+        if root.commenter_type.name == 'beneficiary':
+            return getattr(model_object.individual, attribute)
+        return None
+
+    @staticmethod
     def resolve_commenter_first_name(root, info):
         check_comment_perms(info)
-        if root.commenter_type:
-            content_type = ContentType.objects.get_for_model(root.commenter_type.model_class())
-            if content_type:
-                model_object = content_type.get_object_for_this_type(pk=root.commenter_id)
-                if model_object:
-                    if root.commenter_type.name == 'individual':
-                        return model_object.first_name
-                    elif root.commenter_type.name == 'beneficiary':
-                        return model_object.individual.first_name
-                    elif root.commenter_type.name == 'user':
-                        return None
-        return None
+        return CommentGQLType._commenter_attribute(root, 'first_name')
 
     @staticmethod
     def resolve_commenter_last_name(root, info):
         check_comment_perms(info)
-        if root.commenter_type:
-            content_type = ContentType.objects.get_for_model(root.commenter_type.model_class())
-            if content_type:
-                model_object = content_type.get_object_for_this_type(pk=root.commenter_id)
-                if model_object:
-                    if root.commenter_type.name == 'individual':
-                        return model_object.last_name
-                    elif root.commenter_type.name == 'beneficiary':
-                        return model_object.individual.last_name
-                    elif root.commenter_type.name == 'user':
-                        return None
-        return None
+        return CommentGQLType._commenter_attribute(root, 'last_name')
 
     @staticmethod
     def resolve_commenter_dob(root, info):
         check_comment_perms(info)
-        if root.commenter_type:
-            content_type = ContentType.objects.get_for_model(root.commenter_type.model_class())
-            if content_type:
-                model_object = content_type.get_object_for_this_type(pk=root.commenter_id)
-                if model_object:
-                    if root.commenter_type.name == 'individual':
-                        return model_object.dob
-                    elif root.commenter_type.name == 'beneficiary':
-                        return model_object.individual.dob
-                    elif root.commenter_type.name == 'user':
-                        return None
-        return None
+        return CommentGQLType._commenter_attribute(root, 'dob')
 
     class Meta:
         model = Comment
