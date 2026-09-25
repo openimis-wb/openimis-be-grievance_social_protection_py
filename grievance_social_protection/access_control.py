@@ -463,6 +463,20 @@ class GrievanceAccessControl:
         return {k: v for k, v in available_fields.items() if k in visible_fields}
 
     @classmethod
+    def can_create_in_category(cls, user, category_name):
+        """
+        True when the user may create a ticket in the category, checked as
+        TicketService.create does: the category's create right and the create
+        right of each of its default flags.
+        """
+        default_flags = cls.get_category_defaults(category_name).get('default_flags', [])
+        try:
+            cls.validate_ticket_access(user, category_name, default_flags, cls.PERM_CREATE)
+        except PermissionDenied:
+            return False
+        return True
+
+    @classmethod
     def _build_category_dict(cls, name, info, user, parent_info=None, is_child=False):
         """Build a category dictionary with common fields"""
         base_dict = {
@@ -472,6 +486,7 @@ class GrievanceAccessControl:
             'permissions': info.get('permissions', []),
             'default_flags': info.get('default_flags', []),
             'access_level': cls.get_user_access_level(user, name),
+            'can_create': cls.can_create_in_category(user, name),
             'children': [],
         }
 
@@ -495,7 +510,10 @@ class GrievanceAccessControl:
         """Return hierarchical structure of categories accessible to the user"""
 
         if not TicketConfig.processed_categories:
-            return [{"name": cat, "children": []} for cat in TicketConfig.grievance_types]
+            return [
+                {"name": cat, "children": [], "can_create": cls.can_create_in_category(user, cat)}
+                for cat in TicketConfig.grievance_types
+            ]
 
         hierarchy = []
 

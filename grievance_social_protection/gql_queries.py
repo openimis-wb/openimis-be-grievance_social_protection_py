@@ -365,9 +365,16 @@ class CommentGQLType(DjangoObjectType):
         check_comment_perms(info)
         return model_obj_to_json(root.commenter) if root.commenter else None
 
+    # core.User delegates other_names / last_name to the user it wraps (interactive user,
+    # officer or claim admin); a technical user has neither.
+    _USER_COMMENTER_ATTRIBUTES = {'first_name': 'other_names', 'last_name': 'last_name'}
+
     @staticmethod
     def _commenter_attribute(root, attribute):
-        """Return an attribute of an individual or beneficiary commenter; None when the commenter row is absent."""
+        """
+        Return an attribute of an individual, beneficiary or core user commenter;
+        None when the commenter row is absent or has no such attribute.
+        """
         if not root.commenter_type or not root.commenter_id:
             return None
         try:
@@ -378,6 +385,9 @@ class CommentGQLType(DjangoObjectType):
             return getattr(model_object, attribute)
         if root.commenter_type.name == 'beneficiary':
             return getattr(model_object.individual, attribute)
+        if (root.commenter_type.app_label, root.commenter_type.model) == ('core', 'user'):
+            user_attribute = CommentGQLType._USER_COMMENTER_ATTRIBUTES.get(attribute)
+            return getattr(model_object, user_attribute, None) if user_attribute else None
         return None
 
     @staticmethod
