@@ -160,13 +160,11 @@ class TicketGQLType(DjangoObjectType):
         Visible fields configuration is per-category only.
         """
         user = info.context.user
-        visible_fields = GrievanceAccessControl.get_visible_fields(user, root.category)
+        visible_fields = GrievanceAccessControl.get_visible_fields(user, root.category, root.flags)
 
-        # None means unrestricted access based on category - but check flags too
+        # None means full or read access: every field is visible
         if visible_fields is None:
-            # Double-check with flags included for full access determination
-            access_level = GrievanceAccessControl.get_user_access_level(user, root.category, root.flags)
-            return access_level not in (GrievanceAccessControl.ACCESS_FULL, GrievanceAccessControl.ACCESS_READ)
+            return False
 
         # Empty list means no access
         if not visible_fields:
