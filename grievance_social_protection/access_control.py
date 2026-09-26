@@ -378,18 +378,15 @@ class GrievanceAccessControl:
     def get_effective_priority(cls, category_name, flag_names=None):
         """
         Get the effective priority for a ticket based on category and flags.
-        Higher priority wins (Critical > High > Medium > Low).
+
+        Starts from the category's priority ('Medium' when the category is not
+        configured) and takes any flag priority that is higher
+        (Critical > High > Medium > Low).
         """
 
         priorities = ['Low', 'Medium', 'High', 'Critical']
-        max_idx = priorities.index('Medium')
-
-        # Check category priority
-        if TicketConfig.processed_categories and category_name in TicketConfig.processed_categories:
-            cat_priority = TicketConfig.processed_categories[category_name].get('priority', 'Medium')
-            cat_idx = cls._get_priority_index(cat_priority, priorities)
-            if cat_idx > max_idx:
-                max_idx = cat_idx
+        category_priority = cls.get_category_defaults(category_name)['priority']
+        max_idx = cls._get_priority_index(category_priority, priorities)
 
         # Check flag priorities
         if flag_names:
@@ -405,20 +402,26 @@ class GrievanceAccessControl:
         return priorities[max_idx]
 
     @classmethod
-    def get_visible_fields(cls, user, category_name):
+    def get_visible_fields(cls, user, category_name, flag_names=None):
         """
-        Get the list of fields visible to the user for a specific category.
+        Get the list of fields visible to the user for a category and, when
+        given, the ticket's flags.
+
+        The access level combines the category and the flags (most restrictive
+        wins); the field list for 'restricted' comes from the category's
+        visible_fields, or the basic fields when the category has none.
 
         Args:
             user: Django user object
             category_name: Full category name
+            flag_names: Ticket flags in any encoding accepted by parse_flags
 
         Returns:
             list: List of field names the user can see, or None if all fields are visible
         """
 
         # Check user's access level
-        access_level = cls.get_user_access_level(user, category_name)
+        access_level = cls.get_user_access_level(user, category_name, flag_names)
 
         # Full access or no restrictions - all fields visible
         if access_level in (cls.ACCESS_FULL, cls.ACCESS_READ):
