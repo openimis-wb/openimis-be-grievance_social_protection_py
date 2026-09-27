@@ -112,11 +112,19 @@ class TicketGQLType(DjangoObjectType):
 
     # Access level for this ticket based on user's rights
     access_level = graphene.String()
+    can_update = graphene.Boolean(
+        description="Whether the user holds the ticket update right and the update right "
+                    "of the ticket's category and of each of its flags."
+    )
 
     @staticmethod
     def resolve_access_level(root, info):
         user = info.context.user
         return GrievanceAccessControl.get_user_access_level(user, root.category, root.flags)
+
+    @staticmethod
+    def resolve_can_update(root, info):
+        return GrievanceAccessControl.can_update_ticket(info.context.user, root.category, root.flags)
 
     @staticmethod
     def _should_restrict_field(field_name, root, info):
