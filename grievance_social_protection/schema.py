@@ -57,7 +57,8 @@ class Query(graphene.ObjectType):
         if not (user_associated_with_ticket(user) or user.has_perms(TicketConfig.gql_query_comments_perms)):
             raise PermissionDenied(_("Unauthorized"))
 
-        return gql_optimizer.query(Comment.objects.all(), info)
+        query = GrievanceAccessControl.filter_comment_queryset(Comment.objects.all(), user)
+        return gql_optimizer.query(query, info)
 
     def resolve_ticket_details(self, info, **kwargs):
         if not info.context.user.has_perms(TicketConfig.gql_query_tickets_perms):
