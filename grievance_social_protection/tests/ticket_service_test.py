@@ -35,7 +35,7 @@ class TicketServiceTest(TestCase):
         cls.ticket = create_ticket(cls.user)
 
     def test_add_ticket(self):
-        result = self.service.create(service_add_ticket_payload)
+        result = self.service.create(dict(service_add_ticket_payload))
         self.assertTrue(result.get('success', False), result.get('detail', "No details provided"))
         uuid = result.get('data', {}).get('uuid', None)
         query = self.query_all.filter(uuid=uuid)
@@ -43,19 +43,19 @@ class TicketServiceTest(TestCase):
 
     def test_add_ticket_validation(self):
         with self.assertRaises(ValidationError) as context:
-            self.service.create(service_add_ticket_payload_bad_resolution)
+            self.service.create(dict(service_add_ticket_payload_bad_resolution))
 
         exception = context.exception
         self.assertIn(_('validations.TicketValidation.validate_resolution.invalid_format'), str(exception))
 
         with self.assertRaises(ValidationError) as context:
-            self.service.create(service_add_ticket_payload_bad_resolution_day)
+            self.service.create(dict(service_add_ticket_payload_bad_resolution_day))
 
         exception = context.exception
         self.assertIn(_('validations.TicketValidation.validate_resolution.invalid_day_value'), str(exception))
 
         with self.assertRaises(ValidationError) as context:
-            self.service.create(service_add_ticket_payload_bad_resolution_hour)
+            self.service.create(dict(service_add_ticket_payload_bad_resolution_hour))
 
         exception = context.exception
         self.assertIn(_('validations.TicketValidation.validate_resolution.invalid_hour_value'), str(exception))
