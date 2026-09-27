@@ -94,6 +94,7 @@ class TicketService(BaseService):
         try:
             with transaction.atomic():
                 self.validation_class.validate_update(self.user, **obj_data)
+                self._validate_existing_ticket_access(obj_data, access_type=GrievanceAccessControl.PERM_UPDATE)
                 ticket_id = obj_data.get('id')
                 ticket = Ticket.objects.filter(id=ticket_id).first()
                 ticket.status = Ticket.TicketStatus.OPEN
@@ -226,6 +227,7 @@ class CommentService:
                 self.validation_class.validate_resolve_grievance_by_comment(self.user, **obj_data)
                 comment = Comment.objects.filter(id=obj_data.get('id')).first()
                 ticket = comment.ticket
+                self._validate_ticket_update_access(ticket)
                 ticket.status = Ticket.TicketStatus.CLOSED
                 comment.is_resolution = True
                 ticket.save(user=self.user)
@@ -241,6 +243,15 @@ class CommentService:
                 method="resolve_grievance_by_comment",
                 exception=exc
             )
+
+    def _validate_ticket_update_access(self, ticket):
+        """Validate the user may update a ticket of this category and these flags."""
+        try:
+            GrievanceAccessControl.validate_ticket_access(
+                self.user, ticket.category, ticket.flags, GrievanceAccessControl.PERM_UPDATE
+            )
+        except PermissionDenied as e:
+            raise ValidationError(str(e))
 
     def save_instance(self, obj_):
         obj_.save(user=self.user)
