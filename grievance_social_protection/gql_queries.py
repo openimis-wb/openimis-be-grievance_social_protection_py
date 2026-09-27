@@ -88,36 +88,6 @@ class TicketFilterSet(django_filters.FilterSet):
             )
         return queryset
 
-    @staticmethod
-    def _get_restricted_fields(user):
-        """Filter fields hidden on at least one category the user reads at the
-        'restricted' level: the union, across those categories, of the filter
-        fields outside their visible_fields.
-
-        Anonymous/unauthenticated users get every filter field except the
-        always-filterable ones.
-        """
-        if not user or user.is_anonymous:
-            # The ticket resolvers require the ticket query rights before the filters run.
-            return set(TicketFilterSet.Meta.fields.keys()) - _ALWAYS_FILTERABLE
-
-        restricted = set()
-        processed_categories = TicketConfig.processed_categories
-
-        if not processed_categories:
-            return restricted
-
-        all_filterable = set(TicketFilterSet.Meta.fields.keys()) - _ALWAYS_FILTERABLE
-
-        for cat_name in processed_categories:
-            visible_fields = GrievanceAccessControl.get_visible_fields(user, cat_name)
-            # visible_fields is None for full/read access, [] for no access,
-            # or a list of field names for restricted access
-            if visible_fields is not None and visible_fields:
-                restricted |= all_filterable - set(visible_fields)
-
-        return restricted
-
 
 def check_ticket_perms(info):
     if not info.context.user.has_perms(TicketConfig.gql_query_tickets_perms):
