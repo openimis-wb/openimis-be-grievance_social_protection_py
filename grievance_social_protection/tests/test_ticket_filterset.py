@@ -132,7 +132,7 @@ class TicketFilterSetRestrictedFieldsTest(TestCase):
 
 
 class TicketFilterSetFilterQuerysetTest(TestCase):
-    """Test that filter_queryset actually skips restricted filters."""
+    """Test that filter_queryset leaves out tickets whose filtered field is hidden."""
 
     @classmethod
     def setUpClass(cls):
@@ -226,16 +226,14 @@ class TicketFilterSetFilterQuerysetTest(TestCase):
         self.assertIn('FSTEST001', codes)
         self.assertNotIn('FSTEST002', codes)
 
-    def test_restricted_user_cannot_filter_on_description(self):
-        """Restricted user's description filter is silently skipped."""
-        fs = self._build_filterset(
-            self.user_restricted, {'description__icontains': 'secret'}
-        )
-        result = fs.filter_queryset(fs.queryset)
-        codes = list(result.values_list('code', flat=True))
-        # Both tickets should appear because the filter was skipped
-        self.assertIn('FSTEST001', codes)
-        self.assertIn('FSTEST002', codes)
+    def test_restricted_user_description_filter_leaves_out_hidden_tickets(self):
+        """description is hidden on both tickets: neither is returned, matching or not."""
+        for value in ('secret', 'other'):
+            fs = self._build_filterset(
+                self.user_restricted, {'description__icontains': value}
+            )
+            result = fs.filter_queryset(fs.queryset)
+            self.assertEqual(list(result.values_list('code', flat=True)), [])
 
     def test_restricted_user_can_filter_on_status(self):
         """Restricted user can still filter on visible fields like status."""
@@ -257,16 +255,14 @@ class TicketFilterSetFilterQuerysetTest(TestCase):
         self.assertIn('FSTEST001', codes)
         self.assertNotIn('FSTEST002', codes)
 
-    def test_restricted_user_title_filter_skipped(self):
-        """title is not in visible_fields → filter should be skipped."""
-        fs = self._build_filterset(
-            self.user_restricted, {'title__icontains': 'Sensitive'}
-        )
-        result = fs.filter_queryset(fs.queryset)
-        codes = list(result.values_list('code', flat=True))
-        # Filter skipped → both tickets returned
-        self.assertIn('FSTEST001', codes)
-        self.assertIn('FSTEST002', codes)
+    def test_restricted_user_title_filter_leaves_out_hidden_tickets(self):
+        """title is not in visible_fields: no ticket is returned, matching or not."""
+        for value in ('Sensitive', 'Other'):
+            fs = self._build_filterset(
+                self.user_restricted, {'title__icontains': value}
+            )
+            result = fs.filter_queryset(fs.queryset)
+            self.assertEqual(list(result.values_list('code', flat=True)), [])
 
     def test_full_user_title_filter_works(self):
         """Full access user CAN filter on title."""

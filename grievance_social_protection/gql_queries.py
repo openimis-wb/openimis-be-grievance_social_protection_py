@@ -23,8 +23,9 @@ logger = logging.getLogger(__name__)
 
 RESTRICTED_VALUE = "[Restricted]"
 
-# Fields that are always safe to filter on regardless of access level
-_ALWAYS_FILTERABLE = frozenset({'id', 'version'})
+# Fields that are always safe to filter on regardless of access level:
+# TicketGQLType returns them unrestricted at every access level.
+_ALWAYS_FILTERABLE = frozenset({'id', 'version', 'code', 'key'})
 
 # Shared filter field definitions used by TicketFilterSet and CommentGQLType
 TICKET_FILTER_FIELDS = {
@@ -49,11 +50,12 @@ TICKET_FILTER_FIELDS = {
 
 
 class TicketFilterSet(django_filters.FilterSet):
-    """Custom FilterSet that enforces field-level filter restrictions.
+    """FilterSet that applies each filter only to the tickets on which the
+    user sees the filtered field.
 
-    Users with restricted_read access to a category can only filter on
-    fields listed in their visible_fields configuration. This prevents
-    information inference attacks via filter parameters.
+    A ticket on which the field is hidden (restricted access through its
+    category or one of its flags) is left out of the result whatever its
+    value, so a filter reveals nothing about hidden fields.
     """
 
     class Meta:
@@ -61,9 +63,8 @@ class TicketFilterSet(django_filters.FilterSet):
         fields = TICKET_FILTER_FIELDS
 
     def filter_queryset(self, queryset):
-        """Override to skip filters on fields the user cannot see."""
         user = getattr(self.request, 'user', None) if self.request else None
-        restricted = self._get_restricted_fields(user)
+        hidden_by_field = {}
 
         for name, value in self.form.cleaned_data.items():
             filter_obj = self.filters.get(name)
@@ -72,12 +73,14 @@ class TicketFilterSet(django_filters.FilterSet):
             # Skip empty values (matches django-filter base behavior)
             if value in EMPTY_VALUES:
                 continue
-            if filter_obj.field_name in restricted:
-                logger.info(
-                    "User %s blocked from filtering on restricted field '%s'",
-                    getattr(user, 'username', '?'), filter_obj.field_name
-                )
-                continue
+            # A related-field filter such as attending_staff__username reads
+            # the field the resolvers restrict, attending_staff.
+            field = filter_obj.field_name.split('__')[0]
+            if field not in _ALWAYS_FILTERABLE:
+                if field not in hidden_by_field:
+                    hidden_by_field[field] = GrievanceAccessControl.hidden_field_q(user, field)
+                if hidden_by_field[field] is not None:
+                    queryset = queryset.exclude(hidden_by_field[field])
             queryset = filter_obj.filter(queryset, value)
             assert isinstance(queryset, models.QuerySet), (
                 "Expected '%s.%s' to return a QuerySet, but got a %s instead."
@@ -87,20 +90,15 @@ class TicketFilterSet(django_filters.FilterSet):
 
     @staticmethod
     def _get_restricted_fields(user):
-        """Get fields that should not be filterable for this user.
+        """Filter fields hidden on at least one category the user reads at the
+        'restricted' level: the union, across those categories, of the filter
+        fields outside their visible_fields.
 
-        If the user has restricted_read access to ANY accessible category,
-        fields not in that category's visible_fields are blocked from filtering.
-        Because restrictions are accumulated across all categories via set union,
-        a field blocked in any one restricted category is blocked everywhere.
-
-        Anonymous/unauthenticated users are blocked from filtering on all fields
-        as defense-in-depth (check_ticket_perms should block them upstream).
+        Anonymous/unauthenticated users get every filter field except the
+        always-filterable ones.
         """
         if not user or user.is_anonymous:
-            # Block all filterable fields — anonymous users should not reach
-            # this point (check_ticket_perms gates upstream), but if they do,
-            # deny all filtering rather than allowing it.
+            # The ticket resolvers require the ticket query rights before the filters run.
             return set(TicketFilterSet.Meta.fields.keys()) - _ALWAYS_FILTERABLE
 
         restricted = set()
@@ -326,9 +324,8 @@ class TicketGQLType(DjangoObjectType):
     class Meta:
         model = Ticket
         interfaces = (graphene.relay.Node,)
-        # TicketFilterSet enforces field-level filter restrictions:
-        # users with restricted_read access cannot filter on fields
-        # outside their visible_fields configuration.
+        # TicketFilterSet applies a filter only to the tickets on which
+        # the user sees the filtered field.
         filterset_class = TicketFilterSet
 
         connection_class = ExtendedConnection
