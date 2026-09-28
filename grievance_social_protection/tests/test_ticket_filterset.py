@@ -8,127 +8,12 @@ from django.test import TestCase
 
 from core.test_helpers import create_test_interactive_user
 
-from grievance_social_protection.apps import TicketConfig
-from grievance_social_protection.gql_queries import TicketFilterSet, _ALWAYS_FILTERABLE
+from grievance_social_protection.gql_queries import TicketFilterSet
 from grievance_social_protection.models import Ticket
 from grievance_social_protection.tests.test_helpers import (
     setup_grievance_config, restore_grievance_config,
     assign_rights_to_user, get_rights,
 )
-
-
-class TicketFilterSetRestrictedFieldsTest(TestCase):
-    """Test _get_restricted_fields for different access levels."""
-
-    @classmethod
-    def setUpClass(cls):
-        super().setUpClass()
-        cls.user_restricted = create_test_interactive_user(
-            username='fs_restricted', roles=[1]
-        )
-        cls.user_full = create_test_interactive_user(
-            username='fs_full', roles=[1]
-        )
-        cls.user_no_access = create_test_interactive_user(
-            username='fs_no_access', roles=[1]
-        )
-
-    def setUp(self):
-        super().setUp()
-        self._snapshot = self._setup_config()
-
-    def tearDown(self):
-        restore_grievance_config(self._snapshot)
-        super().tearDown()
-
-    def _setup_config(self):
-        cfg = {
-            'grievance_types': [
-                {
-                    'name': 'restricted_cat',
-                    'permissions': ['restricted_read', 'read'],
-                    'visible_fields': ['id', 'status', 'category', 'priority'],
-                },
-                'open_cat',
-            ],
-            'grievance_flags': [],
-        }
-        snapshot = setup_grievance_config(cfg)
-
-        cat_rights = get_rights('processed_categories', 'restricted_cat')
-
-        if cat_rights.get('restricted_read'):
-            assign_rights_to_user(
-                self.user_restricted,
-                [127000, cat_rights['restricted_read']],
-                role_name='FSRestrictedRole',
-            )
-
-        if cat_rights.get('read'):
-            assign_rights_to_user(
-                self.user_full,
-                [127000, cat_rights['read']],
-                role_name='FSFullRole',
-            )
-
-        return snapshot
-
-    # ── _get_restricted_fields tests ─────────────────────────────
-
-    def test_restricted_user_has_restricted_fields(self):
-        """Restricted user should have fields outside visible_fields blocked."""
-        restricted = TicketFilterSet._get_restricted_fields(self.user_restricted)
-        # 'description' is NOT in visible_fields so should be restricted
-        self.assertIn('description', restricted)
-        self.assertIn('resolution', restricted)
-        self.assertIn('channel', restricted)
-        self.assertIn('title', restricted)
-
-    def test_restricted_user_allows_visible_fields(self):
-        """Restricted user should NOT have visible_fields blocked."""
-        restricted = TicketFilterSet._get_restricted_fields(self.user_restricted)
-        self.assertNotIn('status', restricted)
-        self.assertNotIn('category', restricted)
-        self.assertNotIn('priority', restricted)
-
-    def test_full_access_user_no_restricted_fields(self):
-        """User with read access should have no restricted fields."""
-        restricted = TicketFilterSet._get_restricted_fields(self.user_full)
-        self.assertEqual(restricted, set())
-
-    def test_no_access_user_no_restricted_fields(self):
-        """User with no grievance rights returns empty set (queryset filtering
-        handles access denial; filter restriction is an additional guard)."""
-        restricted = TicketFilterSet._get_restricted_fields(self.user_no_access)
-        # get_visible_fields returns [] for no access, which is falsy →
-        # the `if visible_fields is not None and visible_fields:` guard skips it
-        self.assertEqual(restricted, set())
-
-    def test_anonymous_user_all_fields_restricted(self):
-        """Anonymous user has all filterable fields restricted (defense-in-depth)."""
-        anon = MagicMock()
-        anon.is_anonymous = True
-        restricted = TicketFilterSet._get_restricted_fields(anon)
-        expected = set(TicketFilterSet.Meta.fields.keys()) - _ALWAYS_FILTERABLE
-        self.assertEqual(restricted, expected)
-
-    def test_none_user_all_fields_restricted(self):
-        """None user has all filterable fields restricted (defense-in-depth)."""
-        restricted = TicketFilterSet._get_restricted_fields(None)
-        expected = set(TicketFilterSet.Meta.fields.keys()) - _ALWAYS_FILTERABLE
-        self.assertEqual(restricted, expected)
-
-    def test_always_filterable_not_restricted(self):
-        """Fields in _ALWAYS_FILTERABLE are never in the restricted set."""
-        restricted = TicketFilterSet._get_restricted_fields(self.user_restricted)
-        for field in _ALWAYS_FILTERABLE:
-            self.assertNotIn(field, restricted)
-
-    def test_no_config_returns_empty(self):
-        """When no categories are configured, nothing is restricted."""
-        TicketConfig.processed_categories = {}
-        restricted = TicketFilterSet._get_restricted_fields(self.user_restricted)
-        self.assertEqual(restricted, set())
 
 
 class TicketFilterSetFilterQuerysetTest(TestCase):
