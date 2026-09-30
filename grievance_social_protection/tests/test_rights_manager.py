@@ -6,10 +6,13 @@ This module provides comprehensive test coverage for:
 - _get_next_available_id(): ID generation with suffix pattern
 - _generate_permission_fields(): Codename and permission name generation
 """
+from datetime import datetime
+
 from django.contrib.auth.models import Permission
 from django.contrib.contenttypes.models import ContentType
 from django.test import TestCase
 
+from core.models import Role, RoleRight
 from grievance_social_protection.models import Ticket
 from grievance_social_protection.rights import GrievanceRightsManager
 from grievance_social_protection.apps import TicketConfig
@@ -756,3 +759,58 @@ class TestProcessPermissions(TestCase):
         self.assertGreater(len(used_ids), initial_count)
         new_id = item_info['generated_rights']['read']
         self.assertIn(new_id, used_ids)
+
+
+class TestGeneratedIdsSkipGrantedIds(TestCase):
+    """Generated ids skip ids that live role grants still reference."""
+
+    CATEGORY = 'granted_id_cat'
+
+    def setUp(self):
+        self.ct = ContentType.objects.get_for_model(Ticket)
+        self.role, _ = Role.objects.get_or_create(
+            name='GrantedIdTestRole',
+            defaults={'is_system': 0, 'is_blocked': False, 'audit_user_id': -1},
+        )
+        reserved_range = (GrievanceRightsManager.GRIEVANCE_RIGHT_BASE, GrievanceRightsManager.GRIEVANCE_RIGHT_MAX)
+        self.used_ids = set(Permission.objects.filter(
+            id__range=reserved_range
+        ).values_list('id', flat=True)) | set(RoleRight.filter_queryset().filter(
+            right_id__range=reserved_range
+        ).values_list('right_id', flat=True))
+        self.granted_id = GrievanceRightsManager._get_next_available_id('read', self.used_ids)
+
+    def _generate(self):
+        app_config = TicketConfig('grievance_social_protection', grievance_social_protection)
+        app_config.processed_categories = {self.CATEGORY: {'permissions': ['read'], 'generated_rights': {}}}
+        app_config.processed_flags = {}
+        app_config.generated_rights = {}
+        GrievanceRightsManager.generate_automatic_rights(app_config)
+        return app_config.processed_categories[self.CATEGORY]['generated_rights']['read']
+
+    def test_skips_id_held_by_live_role_grant(self):
+        RoleRight.objects.create(role=self.role, right_id=self.granted_id, audit_user_id=-1)
+        expected_id = GrievanceRightsManager._get_next_available_id(
+            'read', self.used_ids | {self.granted_id})
+
+        new_id = self._generate()
+
+        self.assertNotEqual(new_id, self.granted_id)
+        self.assertEqual(new_id, expected_id)
+        self.assertEqual(new_id % 10, self.granted_id % 10)
+
+    def test_logs_orphan_grant(self):
+        RoleRight.objects.create(role=self.role, right_id=self.granted_id, audit_user_id=-1)
+
+        with self.assertLogs('grievance_social_protection.rights', level='WARNING') as logs:
+            self._generate()
+
+        self.assertTrue(any(
+            str(self.granted_id) in line and str(self.role.id) in line for line in logs.output
+        ))
+
+    def test_revoked_grant_does_not_block_id(self):
+        RoleRight.objects.create(
+            role=self.role, right_id=self.granted_id, audit_user_id=-1, validity_to=datetime.now())
+
+        self.assertEqual(self._generate(), self.granted_id)

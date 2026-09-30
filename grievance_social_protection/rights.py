@@ -7,6 +7,7 @@ import re
 from django.contrib.auth.models import Permission
 from django.contrib.contenttypes.models import ContentType
 from django.db import transaction, IntegrityError
+from core.models import RoleRight
 from .apps import DEFAULT_CFG
 from .models import Ticket
 
@@ -121,6 +122,7 @@ class GrievanceRightsManager:
                     )
 
                     used_ids = set(locked_perms.values_list('id', flat=True))
+                    used_ids |= cls._get_granted_ids(used_ids)
 
                     existing_perms = locked_perms.filter(
                         content_type=ct,
@@ -174,6 +176,36 @@ class GrievanceRightsManager:
             for right_name, right_ids in grouped_rights.items():
                 setattr(app_config, right_name, right_ids)
                 DEFAULT_CFG[right_name] = [str(rid) for rid in right_ids]
+
+    @classmethod
+    def _get_granted_ids(cls, permission_ids):
+        """
+        Right ids in the reserved range that live role grants (RoleRight rows
+        without validity_to) reference. A role holding such an id would gain
+        any permission created with it, so these ids are never assigned.
+        Grants whose id is not in `permission_ids` are logged as orphans.
+        """
+        grants = RoleRight.filter_queryset().filter(
+            right_id__range=(cls.GRIEVANCE_RIGHT_BASE, cls.GRIEVANCE_RIGHT_MAX)
+        ).values_list('right_id', 'role_id')
+
+        granted_ids = set()
+        orphan_roles = {}
+        for right_id, role_id in grants:
+            granted_ids.add(right_id)
+            if right_id not in permission_ids:
+                orphan_roles.setdefault(right_id, set()).add(role_id)
+
+        if orphan_roles:
+            logger.warning(
+                "Role grants reference grievance right ids with no permission; "
+                "these ids are not reused until the grants are revoked: %s",
+                ", ".join(
+                    f"{right_id} (role ids: {', '.join(str(r) for r in sorted(roles))})"
+                    for right_id, roles in sorted(orphan_roles.items())
+                ),
+            )
+        return granted_ids
 
     @classmethod
     def _get_next_available_id(cls, perm_type, used_ids):
