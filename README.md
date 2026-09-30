@@ -116,7 +116,7 @@ The grievance module automatically generates permission IDs using Django's auth_
    - Permissions are stored in Django's `auth_permission` table
    - Once assigned, an ID remains stable even if configuration changes
    - Permissions can be managed through Django admin interface
-   - Deleted permissions free up their IDs for reuse
+   - Deleted permissions free up their IDs for reuse once no active role grant references them (see [Permission Lifecycle](#permission-lifecycle))
 
 3. **Access Levels** (based on user's rights):
    - **Restricted Access** (`restricted_read` right): 
@@ -127,10 +127,23 @@ The grievance module automatically generates permission IDs using Django's auth_
    - **Read Access** (`read` right): 
      - Users see all ticket information including descriptions and resolutions
      - Can filter on all fields
-     - Cannot modify tickets
-   - **Full Access** (`create`/`update` rights): 
+     - The `read` right alone does not allow modifying tickets
+   - **Full Access** (`create`, `update` or `delete` right generated for the category/flag): 
      - Users can view and modify tickets
      - Can create new tickets in categories where they have `create` permission
+     - Only rights generated for the item itself count. The module's base ticket rights (127001-127003) do not raise a user above Read Access on a restricted category or flag, even when the item does not list that permission type
+     - An item that lists none of `create`, `update` and `delete` has Read Access as its highest level
+
+   The access level decides which fields are shown and is returned as `accessLevel` on tickets. Whether a create, update or delete operation is allowed is checked separately, per permission type (see [Unlisted Permission Types](#unlisted-permission-types)).
+
+##### Unlisted Permission Types
+When a category or flag has generated rights but does not list one of the standard types (`read`, `create`, `update`, `delete`), a check for that type falls back to the module's base ticket right for it (127000 view, 127001 create, 127002 update, 127003 delete). `restricted_read` has no fallback.
+
+- **Operations**: a user holding 127002 can update tickets of a category that does not list `update`; the same applies to `create` and `delete`.
+- **Viewing**: an item that does not list `read` is readable in full (Read Access, no masking) by every holder of 127000. A category with `visible_fields` gets `read` added automatically; a flag must list `read` itself to hide fields.
+- **Access level**: the fallback never grants Full Access (see above).
+
+To make every kind of access to a category or flag depend on item-specific rights, list all five types: `["restricted_read", "read", "create", "update", "delete"]`.
 
 ##### Resolution Times Priority
 Resolution times are determined in the following order:
@@ -233,11 +246,13 @@ Flags are single-level configurations only and do NOT support hierarchical/neste
     {
       "name": "sensitive",
       "priority": "Critical",
-      "permissions": ["read", "create"]  // Auto-generates permission IDs
+      "permissions": ["restricted_read", "read", "create", "update", "delete"]  // Auto-generates permission IDs
     }
   ]
 }
 ```
+
+With all five types listed, viewing, creating, updating and deleting tickets that carry the flag each require the flag's own generated right. A flag that lists only some types defers the others to the module's base ticket rights (see [Unlisted Permission Types](#unlisted-permission-types)); for example, with `["read", "create"]` any holder of 127002 can update tickets carrying the flag.
 
 ## Permissions
 
@@ -275,7 +290,7 @@ The `grievance_config` query returns:
      - 127001: Create tickets
      - 127002: Update tickets
      - 127003: Delete tickets
-   - **Tier 2**: Category/flag-specific permissions (additional requirements for restricted categories)
+   - **Tier 2**: Category/flag-specific permissions (additional requirements for restricted categories, for the permission types each category/flag lists)
 
 2. **Role Composition Pattern**:
    The system supports hierarchical role composition for clean permission management:
@@ -350,7 +365,7 @@ The module uses Django's `auth_permission` table to store and manage permissions
 1. **Automatic Creation**: On module startup, permissions are automatically created in the `auth_permission` table based on your configuration
 2. **Stable IDs**: Once created, permission IDs remain stable even if configuration changes
 3. **Django Admin Management**: Permissions can be viewed and managed through Django's admin interface
-4. **ID Reuse**: Deleted permissions free up their IDs for potential reuse following the suffix pattern
+4. **ID Reuse**: Deleted permissions free up their IDs for potential reuse following the suffix pattern. An ID that an active role grant (a `RoleRight` row without `validity_to`) still references is never reused
 
 ### Permission Lifecycle
 
@@ -367,8 +382,9 @@ The module uses Django's `auth_permission` table to store and manage permissions
 
 3. **Deletion**:
    - Permissions must be explicitly deleted through Django admin
-   - Deleting a permission frees its ID for reuse
-   - Roles referencing deleted permissions lose that access
+   - Deleting a permission does not revoke the role grants that reference its ID; those roles keep the ID, which no longer matches any category or flag
+   - While such a grant is active, the ID is not reused for a new permission, so the roles do not gain the access of a newly configured category or flag. Whenever rights are generated (module startup, `manage_grievance_permissions sync`), a warning lists each such right ID with the role IDs that hold it
+   - Once the grants are revoked, the ID is free for reuse
 
 ### Managing Permissions
 
