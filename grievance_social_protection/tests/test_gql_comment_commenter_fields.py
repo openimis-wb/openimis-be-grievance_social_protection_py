@@ -11,7 +11,10 @@ from core.models.openimis_graphql_test_case import openIMISGraphQLTestCase, Base
 from core.test_helpers import create_test_interactive_user, create_test_technical_user
 from grievance_social_protection.models import Comment
 from grievance_social_protection.schema import Query, Mutation
-from grievance_social_protection.tests.test_helpers import create_ticket, create_test_grievance_user
+from grievance_social_protection.tests.data import service_add_ticket_payload
+from grievance_social_protection.tests.test_helpers import (
+    create_test_grievance_user, create_ticket, restore_grievance_config, setup_grievance_config,
+)
 
 gql_query_comment_commenter_fields = """
 query {
@@ -35,6 +38,12 @@ class GQLCommentCommenterFieldsTestCase(openIMISGraphQLTestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
+        # The ticket's category must be readable whatever module config the database holds.
+        snapshot = setup_grievance_config({
+            'grievance_types': [service_add_ticket_payload['category']],
+            'grievance_flags': [],
+        })
+        cls.addClassCleanup(restore_grievance_config, snapshot)
         cls.user = create_test_grievance_user(username='commenter_fields_user')
         cls.ticket = create_ticket(cls.user)
 
