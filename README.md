@@ -118,7 +118,7 @@ The grievance module automatically generates permission IDs using Django's auth_
    - Permissions are stored in Django's `auth_permission` table
    - Once assigned, an ID remains stable even if configuration changes
    - Permissions can be managed through Django admin interface
-   - Deleted permissions free up their IDs for reuse
+   - Deleted permissions free up their IDs for reuse once no active role grant references them (see [Permission Lifecycle](#permission-lifecycle))
 
 3. **Access Levels** (based on user's rights):
    - **Restricted Access** (`restricted_read` right): 
@@ -352,7 +352,7 @@ The module uses Django's `auth_permission` table to store and manage permissions
 1. **Automatic Creation**: On module startup, permissions are automatically created in the `auth_permission` table based on your configuration
 2. **Stable IDs**: Once created, permission IDs remain stable even if configuration changes
 3. **Django Admin Management**: Permissions can be viewed and managed through Django's admin interface
-4. **ID Reuse**: Deleted permissions free up their IDs for potential reuse following the suffix pattern
+4. **ID Reuse**: Deleted permissions free up their IDs for potential reuse following the suffix pattern. An ID that an active role grant (a `RoleRight` row without `validity_to`) still references is never reused
 
 ### Permission Lifecycle
 
@@ -369,8 +369,9 @@ The module uses Django's `auth_permission` table to store and manage permissions
 
 3. **Deletion**:
    - Permissions must be explicitly deleted through Django admin
-   - Deleting a permission frees its ID for reuse
-   - Roles referencing deleted permissions lose that access
+   - Deleting a permission does not revoke the role grants that reference its ID; those roles keep the ID, which no longer matches any category or flag
+   - While such a grant is active, the ID is not reused for a new permission, so the roles do not gain the access of a newly configured category or flag. Whenever rights are generated (module startup, `manage_grievance_permissions sync`), a warning lists each such right ID with the role IDs that hold it
+   - Once the grants are revoked, the ID is free for reuse
 
 ### Managing Permissions
 
