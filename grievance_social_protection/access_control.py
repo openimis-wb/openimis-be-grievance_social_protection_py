@@ -512,6 +512,23 @@ class GrievanceAccessControl:
         return queryset.filter(ticket_id__in=tickets.values('id'))
 
     @classmethod
+    def can_update_ticket(cls, user, category, flags=None):
+        """
+        True when the user may update a ticket of the category and flags, as
+        UpdateTicketMutation and TicketService.update check it: the module's
+        update right and the update right of the category and of each flag.
+        """
+        if not user or user.is_anonymous:
+            return False
+        if not user.has_perms(TicketConfig.gql_mutation_update_tickets_perms):
+            return False
+        try:
+            cls.validate_ticket_access(user, category, flags, cls.PERM_UPDATE)
+        except PermissionDenied:
+            return False
+        return True
+
+    @classmethod
     def hidden_field_q(cls, user, field_name):
         """
         Q matching the tickets on which the field is hidden to the user, as
