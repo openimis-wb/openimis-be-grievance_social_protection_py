@@ -34,7 +34,6 @@ class Query(graphene.ObjectType):
 
     ticketsStr = OrderedDjangoFilterConnectionField(
         TicketGQLType,
-        str=graphene.String(),
     )
     # ticket_attachments = DjangoFilterConnectionField(TicketAttachmentGQLType)
 
@@ -118,10 +117,6 @@ class Query(graphene.ObjectType):
         client_mutation_id = kwargs.get("client_mutation_id", None)
         if client_mutation_id:
             filters.append(Q(mutations__mutation__client_mutation_id=client_mutation_id))
-
-        # str = kwargs.get('str')
-        # if str is not None:
-        #     filters += [Q(code__icontains=str) | Q(name__icontains=str)]
 
         query = Ticket.objects.filter(*filters).all()
 
