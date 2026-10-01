@@ -1,6 +1,8 @@
 import json
 import logging
+import operator
 import re
+from functools import reduce
 from django.core.exceptions import PermissionDenied
 from django.db.models import Q
 
@@ -37,6 +39,9 @@ class GrievanceAccessControl:
     PERM_CREATE = 'create'
     PERM_UPDATE = 'update'
     PERM_DELETE = 'delete'
+
+    # Fields visible at the 'restricted' level when the category sets no visible_fields
+    BASIC_VISIBLE_FIELDS = ('id', 'status', 'category', 'priority', 'date_created')
 
     # Fallback to the module's standard ticket permissions when a category/flag
     # has generated_rights but the specific permission type is not among them.
@@ -448,17 +453,59 @@ class GrievanceAccessControl:
         if access_level == cls.ACCESS_NONE:
             return []
 
-        # Restricted access - check visible_fields configuration
-        if TicketConfig.processed_categories and category_name in TicketConfig.processed_categories:
-            category_info = TicketConfig.processed_categories[category_name]
-            visible_fields = category_info.get('visible_fields', [])
+        return cls.restricted_visible_fields(category_name)
 
-            # If visible_fields is defined, return it
-            if visible_fields:
-                return visible_fields.copy()
+    @classmethod
+    def restricted_visible_fields(cls, category_name):
+        """
+        Fields visible at the 'restricted' level on a ticket of the category:
+        the category's visible_fields, or the basic fields when it has none.
+        """
+        processed = TicketConfig.processed_categories or {}
+        visible_fields = processed.get(category_name, {}).get('visible_fields') if category_name else None
+        if visible_fields:
+            return list(visible_fields)
+        return list(cls.BASIC_VISIBLE_FIELDS)
 
-        # If no visible_fields configured, restricted users see basic fields only
-        return ['id', 'status', 'category', 'priority', 'date_created']
+    @classmethod
+    def hidden_field_q(cls, user, field_name):
+        """
+        Q matching the tickets on which the field is hidden to the user, as
+        get_visible_fields decides it from each ticket's category and flags;
+        None when the field is visible on every ticket.
+        """
+        if not user or user.is_anonymous:
+            return Q(pk__isnull=False)
+
+        categories = TicketConfig.processed_categories or {}
+        flags = TicketConfig.processed_flags or {}
+        by_level = {cls.ACCESS_NONE: [], cls.ACCESS_RESTRICTED: []}
+        for name in categories:
+            level = cls.get_user_access_level(user, name)
+            if level in by_level:
+                by_level[level].append(Q(category=name))
+        for name in flags:
+            level = cls.get_user_access_level(user, None, [name])
+            if level in by_level:
+                by_level[level].append(cls._flag_stored_q(name))
+
+        hidden = []
+        if by_level[cls.ACCESS_NONE]:
+            hidden.append(reduce(operator.or_, by_level[cls.ACCESS_NONE]))
+        if by_level[cls.ACCESS_RESTRICTED]:
+            # At the 'restricted' level the category decides which fields show;
+            # a ticket of an unconfigured or blank category shows the basic fields.
+            hides_field = []
+            hiding_categories = [
+                name for name in categories if field_name not in cls.restricted_visible_fields(name)]
+            if hiding_categories:
+                hides_field.append(Q(category__in=hiding_categories))
+            if field_name not in cls.BASIC_VISIBLE_FIELDS:
+                hides_field.append(~Q(category__in=list(categories)))
+            if hides_field:
+                hidden.append(reduce(operator.or_, by_level[cls.ACCESS_RESTRICTED])
+                              & reduce(operator.or_, hides_field))
+        return reduce(operator.or_, hidden) if hidden else None
 
     @classmethod
     def filter_fields_for_user(cls, user, category_name, available_fields):
