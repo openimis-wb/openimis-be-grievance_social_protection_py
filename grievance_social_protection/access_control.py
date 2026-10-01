@@ -19,6 +19,11 @@ class GrievanceAccessControl:
     4. Unconfigured standard permission types fall back to the module's existing role-based permissions
     """
 
+    # Functions (queryset, user) -> queryset that filter_ticket_queryset applies
+    # after the category and flag rules, registered by other modules with
+    # register_ticket_queryset_filter (a module's own row scope, for instance).
+    ticket_queryset_filters = []
+
     # Access level constants
     ACCESS_NONE = 'none'
     ACCESS_RESTRICTED = 'restricted'
@@ -297,7 +302,19 @@ class GrievanceAccessControl:
                     flags__regex=r'(^| )' + re.escape(flag) + r'( |$)'
                 )
 
+        for ticket_filter in cls.ticket_queryset_filters:
+            queryset = ticket_filter(queryset, user)
+
         return queryset
+
+    @classmethod
+    def register_ticket_queryset_filter(cls, ticket_filter):
+        """Add ticket_filter(queryset, user) -> queryset to the filters of
+        filter_ticket_queryset, which every ticket list, comment list and
+        dashboard of the module reads. Registering the same function twice
+        keeps one."""
+        if ticket_filter not in cls.ticket_queryset_filters:
+            cls.ticket_queryset_filters.append(ticket_filter)
 
     @classmethod
     def get_category_defaults(cls, category_name):
