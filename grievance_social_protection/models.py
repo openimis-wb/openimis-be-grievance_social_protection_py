@@ -153,21 +153,12 @@ class Comment(HistoryModel):
         # GraphQL calls with an info object while Rest calls with the user itself
         if isinstance(user, ResolveInfo):
             user = user.context.user
-        if settings.ROW_SECURITY and user.is_anonymous:
+        if user is None or user.is_anonymous:
             return queryset.filter(id=None)
-        if settings.ROW_SECURITY:
-            # Filter out comments for tickets the user cannot see
-            # Get the tickets queryset filtered by user permissions
-            allowed_tickets = Ticket.filter_queryset()
-            allowed_tickets = GrievanceAccessControl.filter_ticket_queryset(allowed_tickets, user)
-            allowed_ticket_ids = allowed_tickets.values_list('id', flat=True)
-
-            # Only show comments for tickets the user can access, or attends
-            queryset = queryset.filter(
-                models.Q(ticket_id__in=allowed_ticket_ids)
-                | models.Q(ticket__attending_staff=user)
-            )
-        return queryset
+        # The comments of the tickets the ticket lists keep for the user, at an
+        # access level other than 'none'. Applied whatever ROW_SECURITY is, as
+        # the ticket list queries apply filter_ticket_queryset.
+        return GrievanceAccessControl.filter_comment_queryset(queryset, user)
 
 
 # LEFT IF NEEDED IN THE FUTURE

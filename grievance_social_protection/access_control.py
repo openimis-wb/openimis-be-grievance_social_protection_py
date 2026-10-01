@@ -468,15 +468,12 @@ class GrievanceAccessControl:
         return list(cls.BASIC_VISIBLE_FIELDS)
 
     @classmethod
-    def hidden_field_q(cls, user, field_name):
+    def _level_conditions(cls, user):
         """
-        Q matching the tickets on which the field is hidden to the user, as
-        get_visible_fields decides it from each ticket's category and flags;
-        None when the field is visible on every ticket.
+        Conditions on the stored category and flags that put a ticket at the
+        'none' or 'restricted' level for the user: {level: [Q, ...]}. A ticket
+        matching a condition of a level is at that level or below it.
         """
-        if not user or user.is_anonymous:
-            return Q(pk__isnull=False)
-
         categories = TicketConfig.processed_categories or {}
         flags = TicketConfig.processed_flags or {}
         by_level = {cls.ACCESS_NONE: [], cls.ACCESS_RESTRICTED: []}
@@ -488,6 +485,44 @@ class GrievanceAccessControl:
             level = cls.get_user_access_level(user, None, [name])
             if level in by_level:
                 by_level[level].append(cls._flag_stored_q(name))
+        return by_level
+
+    @classmethod
+    def no_access_q(cls, user):
+        """
+        Q matching the tickets whose access level for the user is 'none';
+        None when no ticket is at that level.
+        """
+        if not user or user.is_anonymous:
+            return Q(pk__isnull=False)
+        conditions = cls._level_conditions(user)[cls.ACCESS_NONE]
+        return reduce(operator.or_, conditions) if conditions else None
+
+    @classmethod
+    def filter_comment_queryset(cls, queryset, user):
+        """
+        Keep the comments of the non-deleted tickets that filter_ticket_queryset
+        keeps for the user and whose access level is not 'none'.
+        """
+        from .models import Ticket
+        tickets = cls.filter_ticket_queryset(Ticket.objects.filter(is_deleted=False), user)
+        no_access = cls.no_access_q(user)
+        if no_access is not None:
+            tickets = tickets.exclude(no_access)
+        return queryset.filter(ticket_id__in=tickets.values('id'))
+
+    @classmethod
+    def hidden_field_q(cls, user, field_name):
+        """
+        Q matching the tickets on which the field is hidden to the user, as
+        get_visible_fields decides it from each ticket's category and flags;
+        None when the field is visible on every ticket.
+        """
+        if not user or user.is_anonymous:
+            return Q(pk__isnull=False)
+
+        categories = TicketConfig.processed_categories or {}
+        by_level = cls._level_conditions(user)
 
         hidden = []
         if by_level[cls.ACCESS_NONE]:
