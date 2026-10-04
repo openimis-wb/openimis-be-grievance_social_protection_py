@@ -503,10 +503,27 @@ class GrievanceAccessControl:
             entries.append((key, names))
         return entries
 
-    @staticmethod
-    def _anonymized_key_applies(key, category_name):
-        return key == DEFAULT_STRING or bool(category_name) and (
-            category_name == key or category_name.startswith(f"{key}{CATEGORY_SEPARATOR}"))
+    # Separator of a sub-category in the category names earlier versions of
+    # the module stored ('parent|child').
+    LEGACY_CATEGORY_SEPARATOR = '|'
+
+    @classmethod
+    def _anonymized_key_applies(cls, key, category_name):
+        if key == DEFAULT_STRING:
+            return True
+        if not category_name:
+            return False
+        category_name = category_name.replace(cls.LEGACY_CATEGORY_SEPARATOR, CATEGORY_SEPARATOR)
+        return category_name == key or category_name.startswith(f"{key}{CATEGORY_SEPARATOR}")
+
+    @classmethod
+    def _category_family_q(cls, key):
+        """Q matching the tickets of the category key and of its
+        sub-categories, stored with either separator."""
+        names = {key, key.replace(CATEGORY_SEPARATOR, cls.LEGACY_CATEGORY_SEPARATOR)}
+        return reduce(operator.or_, [
+            Q(category=name) | Q(category__startswith=f"{name}{separator}")
+            for name in names for separator in (CATEGORY_SEPARATOR, cls.LEGACY_CATEGORY_SEPARATOR)])
 
     @classmethod
     def anonymized_fields(cls, user, category_name):
@@ -536,8 +553,7 @@ class GrievanceAccessControl:
             return None
         if DEFAULT_STRING in keys:
             return Q(pk__isnull=False)
-        return reduce(operator.or_, [
-            Q(category=key) | Q(category__startswith=f"{key}{CATEGORY_SEPARATOR}") for key in keys])
+        return reduce(operator.or_, [cls._category_family_q(key) for key in keys])
 
     @classmethod
     def _level_conditions(cls, user):

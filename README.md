@@ -241,7 +241,7 @@ The `visible_fields` feature controls field visibility for users with `restricte
 }
 ```
 
-- The `Default` entry applies to every ticket. A category entry applies to the tickets of that category and of its sub-categories.
+- The `Default` entry applies to every ticket. A category entry applies to the tickets of that category and of its sub-categories, including a sub-category stored `parent|child` as earlier versions of the module named it.
 - The ticket fields return `[Restricted]` (text) or `null`, as `visible_fields` does. A ticket filter on a hidden field leaves the tickets hiding it out of the result, a comment filter on it the comments of those tickets, and an ordering on it orders those tickets as if it were null.
 - `updateTicket` leaves a hidden field unchanged: a value sent for it is ignored.
 - `reporter` hides `reporter`, `reporterType`, `reporterId`, `reporterFirstName`, `reporterLastName` and `reporterDob`. `reporter_id` hides `reporterId`, `reporter` and the reporter's names and date of birth. A model column name such as `attending_staff_id` stands for its field.
