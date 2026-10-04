@@ -3,10 +3,10 @@ import logging
 import operator
 import re
 from functools import reduce
-from django.core.exceptions import PermissionDenied
+from django.core.exceptions import FieldDoesNotExist, PermissionDenied
 from django.db.models import Q
 
-from .apps import TicketConfig, CATEGORY_SEPARATOR
+from .apps import TicketConfig, CATEGORY_SEPARATOR, DEFAULT_STRING
 
 logger = logging.getLogger(__name__)
 
@@ -467,6 +467,78 @@ class GrievanceAccessControl:
             return list(visible_fields)
         return list(cls.BASIC_VISIBLE_FIELDS)
 
+    # Fields an entry of grievance_anonymized_fields hides besides itself: the
+    # reporter fields are read from the reporter row, which the reporter JSON
+    # and reporter_id identify.
+    ANONYMIZED_FIELD_ALIASES = {
+        'reporter': ('reporter_type', 'reporter_id', 'reporter_first_name', 'reporter_last_name', 'reporter_dob'),
+        'reporter_id': ('reporter', 'reporter_first_name', 'reporter_last_name', 'reporter_dob'),
+    }
+
+    @classmethod
+    def _anonymized_entries(cls):
+        """(key, field names) for each entry of grievance_anonymized_fields.
+        A model attname (reporter_type_id) names its field; a value that is
+        neither a name nor a list of names lists nothing."""
+        from .models import Ticket
+        configured = TicketConfig.grievance_anonymized_fields
+        if not isinstance(configured, dict):
+            return []
+        entries = []
+        for key, value in configured.items():
+            if isinstance(value, str):
+                listed = [value]
+            elif isinstance(value, (list, tuple, set)):
+                listed = [str(name) for name in value]
+            else:
+                continue
+            names = set()
+            for name in listed:
+                try:
+                    name = Ticket._meta.get_field(name).name
+                except FieldDoesNotExist:
+                    pass
+                names.add(name)
+                names.update(cls.ANONYMIZED_FIELD_ALIASES.get(name, ()))
+            entries.append((key, names))
+        return entries
+
+    @staticmethod
+    def _anonymized_key_applies(key, category_name):
+        return key == DEFAULT_STRING or bool(category_name) and (
+            category_name == key or category_name.startswith(f"{key}{CATEGORY_SEPARATOR}"))
+
+    @classmethod
+    def anonymized_fields(cls, user, category_name):
+        """
+        Fields grievance_anonymized_fields hides from the user on a ticket of
+        the category: the entries under the default key, under the category
+        and under each of its parent categories. Superusers see every field.
+        """
+        if user is not None and getattr(user, 'is_superuser', False):
+            return set()
+        hidden = set()
+        for key, names in cls._anonymized_entries():
+            if cls._anonymized_key_applies(key, category_name):
+                hidden.update(names)
+        return hidden
+
+    @classmethod
+    def anonymized_field_q(cls, user, field_name):
+        """
+        Q matching the tickets on which grievance_anonymized_fields hides the
+        field from the user; None when it hides it on no ticket.
+        """
+        if user is not None and getattr(user, 'is_superuser', False):
+            return None
+        keys = [key for key, names in cls._anonymized_entries() if field_name in names]
+        if not keys:
+            return None
+        if DEFAULT_STRING in keys:
+            return Q(pk__isnull=False)
+        return reduce(operator.or_, [
+            Q(category=key) | Q(category__startswith=f"{key}{CATEGORY_SEPARATOR}") for key in keys])
+
     @classmethod
     def _level_conditions(cls, user):
         """
@@ -532,8 +604,9 @@ class GrievanceAccessControl:
     def hidden_field_q(cls, user, field_name):
         """
         Q matching the tickets on which the field is hidden to the user, as
-        get_visible_fields decides it from each ticket's category and flags;
-        None when the field is visible on every ticket.
+        get_visible_fields decides it from each ticket's category and flags
+        and anonymized_fields from its category; None when the field is
+        visible on every ticket.
         """
         if not user or user.is_anonymous:
             return Q(pk__isnull=False)
@@ -557,6 +630,9 @@ class GrievanceAccessControl:
             if hides_field:
                 hidden.append(reduce(operator.or_, by_level[cls.ACCESS_RESTRICTED])
                               & reduce(operator.or_, hides_field))
+        anonymized = cls.anonymized_field_q(user, field_name)
+        if anonymized is not None:
+            hidden.append(anonymized)
         return reduce(operator.or_, hidden) if hidden else None
 
     @classmethod

@@ -229,6 +229,24 @@ The `visible_fields` feature controls field visibility for users with `restricte
    - If a category has `default_flags: ["confidential"]` and the confidential flag restricts certain fields, the category's `visible_fields` must respect those restrictions
    - This prevents accidental exposure of sensitive information through misconfiguration
 
+#### Anonymized Fields
+
+`grievance_anonymized_fields` lists ticket fields hidden from every user except superusers, whatever their access level:
+
+```json
+{
+  "grievance_anonymized_fields": {
+    "Default": ["channel"],
+    "complaint": ["description", "reporter"]
+  }
+}
+```
+
+- The `Default` entry applies to every ticket. A category entry applies to the tickets of that category and of its sub-categories.
+- The ticket fields return `[Restricted]` (text) or `null`, as `visible_fields` does. A ticket filter on a hidden field leaves the tickets hiding it out of the result.
+- `updateTicket` leaves a hidden field unchanged: a value sent for it is ignored.
+- `reporter` hides `reporter`, `reporterType`, `reporterId`, `reporterFirstName`, `reporterLastName` and `reporterDob`. `reporter_id` hides `reporterId`, `reporter` and the reporter's names and date of birth. A model column name such as `attending_staff_id` stands for its field.
+
 ### Flags Configuration
 
 Flags are single-level configurations only and do NOT support hierarchical/nested structures. Unlike categories (`grievance_types`) which support parent-child relationships with permission inheritance, flags are always flat.

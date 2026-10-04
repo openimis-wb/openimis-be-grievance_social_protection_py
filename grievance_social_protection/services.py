@@ -1,5 +1,5 @@
 from django.contrib.contenttypes.models import ContentType
-from django.core.exceptions import ValidationError, PermissionDenied
+from django.core.exceptions import FieldDoesNotExist, ValidationError, PermissionDenied
 from django.db.models import Max
 from django.db import transaction
 
@@ -43,7 +43,9 @@ class TicketService(BaseService):
     @register_service_signal('ticket_service.update')
     def update(self, obj_data):
         self._get_content_type(obj_data)
-        self._validate_existing_ticket_access(obj_data, access_type=GrievanceAccessControl.PERM_UPDATE)
+        ticket = self._validate_existing_ticket_access(obj_data, access_type=GrievanceAccessControl.PERM_UPDATE)
+        if ticket is not None:
+            self._drop_anonymized_fields(obj_data, ticket)
         self._validate_access_control(obj_data, access_type=GrievanceAccessControl.PERM_UPDATE)
         self._apply_category_defaults(obj_data)
         # Re-validate after defaults may have added restricted flags
@@ -68,11 +70,12 @@ class TicketService(BaseService):
             raise ValidationError(str(e))
 
     def _validate_existing_ticket_access(self, obj_data, access_type):
-        """Validate user has permission for the existing ticket's category and flags"""
+        """Validate user has permission for the existing ticket's category and
+        flags; returns the ticket, or None when obj_data names no ticket."""
         ticket_uuid = obj_data.get('uuid')
         ticket_id = obj_data.get('id')
         if not ticket_uuid and not ticket_id:
-            return
+            return None
 
         ticket = None
         base_qs = Ticket.filter_queryset()
@@ -87,6 +90,24 @@ class TicketService(BaseService):
             raise ValidationError("Ticket does not exist.")
 
         self._check_access_or_raise(ticket.category, ticket.flags, access_type)
+        return ticket
+
+    def _drop_anonymized_fields(self, obj_data, ticket):
+        """Leave out of obj_data the fields grievance_anonymized_fields hides
+        from the user on the stored ticket. The ticket query returns them
+        masked, so a form that sends them back would store the mask."""
+        hidden = GrievanceAccessControl.anonymized_fields(self.user, ticket.category)
+        if not hidden:
+            return
+        for key in list(obj_data):
+            if key in ('id', 'uuid'):
+                continue
+            try:
+                name = Ticket._meta.get_field(key).name
+            except FieldDoesNotExist:
+                name = key
+            if name in hidden:
+                del obj_data[key]
 
     @register_service_signal('ticket_service.reopen_ticket')
     @check_authentication

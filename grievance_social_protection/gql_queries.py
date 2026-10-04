@@ -166,9 +166,13 @@ class TicketGQLType(DjangoObjectType):
         Check if a field should be restricted based on user's access level and visible_fields configuration.
 
         Access level is determined by both category and flags (most restrictive wins).
-        Visible fields configuration is per-category only.
+        Visible fields configuration is per-category only. Fields of
+        grievance_anonymized_fields are restricted at every access level.
         """
         user = info.context.user
+        if field_name in GrievanceAccessControl.anonymized_fields(user, root.category):
+            return True
+
         visible_fields = GrievanceAccessControl.get_visible_fields(user, root.category, root.flags)
 
         # None means full or read access: every field is visible
