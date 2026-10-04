@@ -245,6 +245,7 @@ The `visible_fields` feature controls field visibility for users with `restricte
 - The ticket fields return `[Restricted]` (text) or `null`, as `visible_fields` does. A ticket filter on a hidden field leaves the tickets hiding it out of the result, a comment filter on it the comments of those tickets, and an ordering on it orders those tickets as if it were null.
 - `updateTicket` leaves a hidden field unchanged: a value sent for it is ignored.
 - `reporter` hides `reporter`, `reporterType`, `reporterId`, `reporterFirstName`, `reporterLastName` and `reporterDob`. `reporter_id` hides `reporterId`, `reporter` and the reporter's names and date of birth. A model column name such as `attending_staff_id` stands for its field.
+- `json_ext.<key>` hides one top-level key of the ticket's `json_ext`: `jsonExt` is returned without it, an ordering on a path under it orders the tickets hiding it as if it were null, and a ticket update through `TicketService` keeps its stored value (`updateTicket` takes no `json_ext`). `json_ext` hides the whole of `jsonExt`.
 
 ### Flags Configuration
 

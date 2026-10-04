@@ -467,6 +467,10 @@ class GrievanceAccessControl:
             return list(visible_fields)
         return list(cls.BASIC_VISIBLE_FIELDS)
 
+    # Prefix of an entry of grievance_anonymized_fields naming a top-level key
+    # of the ticket's json_ext: 'json_ext.<key>'.
+    JSON_EXT_KEY_PREFIX = 'json_ext.'
+
     # Fields an entry of grievance_anonymized_fields hides besides itself: the
     # reporter fields are read from the reporter row, which the reporter JSON
     # and reporter_id identify.
@@ -522,6 +526,16 @@ class GrievanceAccessControl:
             if cls._anonymized_key_applies(key, category_name):
                 hidden.update(names)
         return hidden
+
+    @classmethod
+    def anonymized_json_ext_keys(cls, user, category_name):
+        """
+        Top-level json_ext keys grievance_anonymized_fields hides from the
+        user on a ticket of the category (its 'json_ext.<key>' entries).
+        """
+        prefix = cls.JSON_EXT_KEY_PREFIX
+        return {name[len(prefix):] for name in cls.anonymized_fields(user, category_name)
+                if name.startswith(prefix) and len(name) > len(prefix)}
 
     @classmethod
     def anonymized_field_q(cls, user, field_name):
@@ -610,6 +624,12 @@ class GrievanceAccessControl:
         """
         if not user or user.is_anonymous:
             return Q(pk__isnull=False)
+
+        if field_name.startswith(cls.JSON_EXT_KEY_PREFIX):
+            # A json_ext key is hidden where json_ext is, and where an entry names it.
+            hidden = [q for q in (cls.hidden_field_q(user, 'json_ext'), cls.anonymized_field_q(user, field_name))
+                      if q is not None]
+            return reduce(operator.or_, hidden) if hidden else None
 
         categories = TicketConfig.processed_categories or {}
         by_level = cls._level_conditions(user)
