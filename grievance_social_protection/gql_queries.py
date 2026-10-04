@@ -4,9 +4,10 @@ import graphene
 import django_filters
 from django_filters.constants import EMPTY_VALUES
 from django.db import models
+from django.db.models import Case, F, Q, Value, When
 from graphene import ObjectType
 from graphene_django import DjangoObjectType
-from django.core.exceptions import ObjectDoesNotExist, PermissionDenied
+from django.core.exceptions import FieldDoesNotExist, ObjectDoesNotExist, PermissionDenied
 from django.utils.translation import gettext as _
 
 from core.gql_queries import UserGQLType
@@ -26,7 +27,7 @@ RESTRICTED_VALUE = "[Restricted]"
 # TicketGQLType returns them unrestricted at every access level.
 _ALWAYS_FILTERABLE = frozenset({'id', 'version', 'code', 'key'})
 
-# Shared filter field definitions used by TicketFilterSet and CommentGQLType
+# Shared filter field definitions used by TicketFilterSet and CommentFilterSet
 TICKET_FILTER_FIELDS = {
     "id": ["exact", "isnull"],
     "version": ["exact"],
@@ -48,7 +49,107 @@ TICKET_FILTER_FIELDS = {
 }
 
 
-class TicketFilterSet(django_filters.FilterSet):
+# Prefix of the ticket fields in the lookups of a queryset of comments.
+COMMENT_TICKET_PREFIX = 'ticket__'
+
+
+def _ticket_field(path, ticket_prefix=''):
+    """
+    The ticket field a lookup or ordering path reads, from a queryset of
+    tickets (ticket_prefix '') or of comments (COMMENT_TICKET_PREFIX): the
+    first segment after the prefix, a model attname naming its field. None
+    when the path reads no ticket field or a field of _ALWAYS_FILTERABLE.
+    """
+    if ticket_prefix:
+        if not path.startswith(ticket_prefix):
+            return None
+        path = path[len(ticket_prefix):]
+    name = path.split('__')[0]
+    if name == 'pk':
+        return None
+    try:
+        name = Ticket._meta.get_field(name).name
+    except FieldDoesNotExist:
+        pass
+    return None if name in _ALWAYS_FILTERABLE else name
+
+
+def _hiding_q(user, field_name, ticket_prefix=''):
+    """
+    Q matching the rows whose ticket hides the field from the user
+    (GrievanceAccessControl.hidden_field_q); None when no ticket hides it.
+    """
+    hidden = GrievanceAccessControl.hidden_field_q(user, field_name)
+    if hidden is None or not ticket_prefix:
+        return hidden
+    return Q(**{f'{ticket_prefix}id__in': Ticket.objects.filter(hidden).values('id')})
+
+
+def order_without_hidden_fields(queryset, user, ticket_prefix=''):
+    """
+    The queryset with each term of its ordering on a ticket field ordering the
+    rows whose ticket hides that field from the user as if the field were
+    null, so that their order reveals nothing about its value. ticket_prefix
+    as for _ticket_field. Those rows tie on the masked term: when a term is
+    masked, the ordering ends with id so that pages of the list neither
+    repeat nor skip rows.
+    """
+    ordering = queryset.query.order_by
+    masked = []
+    for term in ordering:
+        if not isinstance(term, str) or term == '?':
+            masked.append(term)
+            continue
+        path = term.lstrip('-')
+        field_name = _ticket_field(path, ticket_prefix)
+        hiding = _hiding_q(user, field_name, ticket_prefix) if field_name else None
+        if hiding is None:
+            masked.append(term)
+            continue
+        value = Case(When(hiding, then=Value(None)), default=F(path))
+        masked.append(value.desc() if term.startswith('-') else value.asc())
+    if masked == list(ordering):
+        return queryset
+    if 'id' not in masked and 'pk' not in masked:
+        masked.append('id')
+    return queryset.order_by(*masked)
+
+
+class _TicketFieldVisibilityFilterSet(django_filters.FilterSet):
+    """FilterSet that applies a filter on a ticket field only to the rows
+    whose ticket shows that field to the user. ticket_prefix as for
+    _ticket_field."""
+
+    ticket_prefix = ''
+
+    def filter_queryset(self, queryset):
+        user = getattr(self.request, 'user', None) if self.request else None
+        hiding_by_field = {}
+
+        for name, value in self.form.cleaned_data.items():
+            filter_obj = self.filters.get(name)
+            if not filter_obj:
+                continue
+            # Skip empty values (matches django-filter base behavior)
+            if value in EMPTY_VALUES:
+                continue
+            # A related-field filter such as attending_staff__username reads
+            # the field the resolvers restrict, attending_staff.
+            field = _ticket_field(filter_obj.field_name, self.ticket_prefix)
+            if field is not None:
+                if field not in hiding_by_field:
+                    hiding_by_field[field] = _hiding_q(user, field, self.ticket_prefix)
+                if hiding_by_field[field] is not None:
+                    queryset = queryset.exclude(hiding_by_field[field])
+            queryset = filter_obj.filter(queryset, value)
+            assert isinstance(queryset, models.QuerySet), (
+                "Expected '%s.%s' to return a QuerySet, but got a %s instead."
+                % (type(self).__name__, name, type(queryset).__name__)
+            )
+        return queryset
+
+
+class TicketFilterSet(_TicketFieldVisibilityFilterSet):
     """FilterSet that applies each filter only to the tickets on which the
     user sees the filtered field.
 
@@ -61,31 +162,23 @@ class TicketFilterSet(django_filters.FilterSet):
         model = Ticket
         fields = TICKET_FILTER_FIELDS
 
-    def filter_queryset(self, queryset):
-        user = getattr(self.request, 'user', None) if self.request else None
-        hidden_by_field = {}
 
-        for name, value in self.form.cleaned_data.items():
-            filter_obj = self.filters.get(name)
-            if not filter_obj:
-                continue
-            # Skip empty values (matches django-filter base behavior)
-            if value in EMPTY_VALUES:
-                continue
-            # A related-field filter such as attending_staff__username reads
-            # the field the resolvers restrict, attending_staff.
-            field = filter_obj.field_name.split('__')[0]
-            if field not in _ALWAYS_FILTERABLE:
-                if field not in hidden_by_field:
-                    hidden_by_field[field] = GrievanceAccessControl.hidden_field_q(user, field)
-                if hidden_by_field[field] is not None:
-                    queryset = queryset.exclude(hidden_by_field[field])
-            queryset = filter_obj.filter(queryset, value)
-            assert isinstance(queryset, models.QuerySet), (
-                "Expected '%s.%s' to return a QuerySet, but got a %s instead."
-                % (type(self).__name__, name, type(queryset).__name__)
-            )
-        return queryset
+class CommentFilterSet(_TicketFieldVisibilityFilterSet):
+    """FilterSet of comments that applies a filter on a field of the
+    comment's ticket only to the comments whose ticket shows that field to
+    the user, as TicketFilterSet does for tickets."""
+
+    ticket_prefix = COMMENT_TICKET_PREFIX
+
+    class Meta:
+        model = Comment
+        fields = {
+            "id": ["exact", "isnull"],
+            "comment": ["exact", "istartswith", "icontains", "iexact"],
+            "date_created": ["exact", "istartswith", "icontains", "iexact"],
+            "is_resolution": ["exact"],
+            **prefix_filterset(COMMENT_TICKET_PREFIX, TICKET_FILTER_FIELDS),
+        }
 
 
 def check_ticket_perms(info):
@@ -394,13 +487,9 @@ class CommentGQLType(DjangoObjectType):
     class Meta:
         model = Comment
         interfaces = (graphene.relay.Node,)
-        filter_fields = {
-            "id": ["exact", "isnull"],
-            "comment": ["exact", "istartswith", "icontains", "iexact"],
-            "date_created": ["exact", "istartswith", "icontains", "iexact"],
-            "is_resolution": ["exact"],
-            **prefix_filterset("ticket__", TICKET_FILTER_FIELDS),
-        }
+        # CommentFilterSet applies a filter on a ticket field only to the
+        # comments whose ticket shows that field to the user.
+        filterset_class = CommentFilterSet
 
         connection_class = ExtendedConnection
 

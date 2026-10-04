@@ -123,7 +123,8 @@ The grievance module automatically generates permission IDs using Django's auth_
      - If `visible_fields` is configured: Users see only fields listed in `visible_fields`
      - If `visible_fields` is not configured: Users see only basic info (id, status, category, priority, date_created)
      - Non-visible fields show as "[Restricted]" for text fields or null for other types
-     - Can only filter queries on visible fields
+     - Can only filter queries on visible fields. A filter on a non-visible field, on `tickets` or on the ticket fields of `comments` / `commentSet` (`ticket_...` arguments), leaves out the tickets (or their comments) hiding it
+     - An ordering on a non-visible field (`orderBy`, or the ordering of `ticketDetails`) orders the tickets hiding it as if it were null, then by id; on `comments`, `orderBy: "ticket__<field>"` follows the same rule
    - **Read Access** (`read` right): 
      - Users see all ticket information including descriptions and resolutions
      - Can filter on all fields
@@ -241,7 +242,7 @@ The `visible_fields` feature controls field visibility for users with `restricte
 ```
 
 - The `Default` entry applies to every ticket. A category entry applies to the tickets of that category and of its sub-categories.
-- The ticket fields return `[Restricted]` (text) or `null`, as `visible_fields` does. A ticket filter on a hidden field leaves the tickets hiding it out of the result.
+- The ticket fields return `[Restricted]` (text) or `null`, as `visible_fields` does. A ticket filter on a hidden field leaves the tickets hiding it out of the result, a comment filter on it the comments of those tickets, and an ordering on it orders those tickets as if it were null.
 - `updateTicket` leaves a hidden field unchanged: a value sent for it is ignored.
 - `reporter` hides `reporter`, `reporterType`, `reporterId`, `reporterFirstName`, `reporterLastName` and `reporterDob`. `reporter_id` hides `reporterId`, `reporter` and the reporter's names and date of birth. A model column name such as `attending_staff_id` stands for its field.
 
