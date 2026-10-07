@@ -10,7 +10,7 @@ from django.core.cache import cache
 from django.test import TestCase
 from graphene import Schema
 from graphene.test import Client
-from graphql_relay import to_global_id
+from graphql_relay import from_global_id, to_global_id
 
 from core.models.openimis_graphql_test_case import BaseTestContext
 from core.test_helpers import create_test_interactive_user, create_test_role
@@ -46,7 +46,7 @@ TICKET_COMMENTS = '''
 '''
 
 TICKET_HISTORY = '''
-    query { tickets(showHistory: true, code_Istartswith: "NV-") { edges { node { code title } } } }
+    query { tickets(showHistory: true) { edges { node { id title } } } }
 '''
 
 
@@ -113,7 +113,7 @@ class NodeVisibilityTest(TestCase):
 
     def test_restricted_reader_gets_the_ticket_masked(self):
         self.assertEqual(self._ticket_node(self.restricted_reader, self.prv_ticket),
-                         {'code': 'NV-PRV', 'title': RESTRICTED_VALUE, 'description': RESTRICTED_VALUE})
+                         {'code': RESTRICTED_VALUE, 'title': RESTRICTED_VALUE, 'description': RESTRICTED_VALUE})
 
     def test_full_reader_gets_the_ticket_in_clear(self):
         self.assertEqual(self._ticket_node(self.full_reader, self.prv_ticket),
@@ -156,4 +156,8 @@ class NodeVisibilityTest(TestCase):
                 (self.ticket_reader, [('NV-OPEN', 'title NV-OPEN')])):
             with self.subTest(user=user.username):
                 edges = self._execute(user, TICKET_HISTORY)['tickets']['edges']
-                self.assertEqual(sorted((e['node']['code'], e['node']['title']) for e in edges), expected)
+                codes = {str(ticket_id): code for ticket_id, code in
+                         Ticket.objects.filter(code__startswith='NV-').values_list('id', 'code')}
+                listed = [(codes[from_global_id(e['node']['id'])[1]], e['node']['title']) for e in edges
+                          if from_global_id(e['node']['id'])[1] in codes]
+                self.assertEqual(sorted(listed), expected)

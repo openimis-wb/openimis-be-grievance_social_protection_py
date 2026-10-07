@@ -8,6 +8,7 @@ from django.core.cache import cache
 from django.test import TestCase
 from graphene import Schema
 from graphene.test import Client
+from graphql_relay import from_global_id
 
 from core.models.openimis_graphql_test_case import BaseTestContext
 from core.test_helpers import create_test_interactive_user, create_test_role
@@ -27,10 +28,11 @@ BASIC_FIELDS = ['id', 'status', 'category', 'priority', 'date_created']
 
 TICKETS_QUERY = '''
     query {
-        tickets(code_Istartswith: "FLAGRL") {
+        tickets {
             totalCount
             edges {
                 node {
+                    id
                     code
                     status
                     title
@@ -104,7 +106,9 @@ class FlagRestrictedTicketListTest(TestCase):
     def _nodes(self, user):
         result = Client(self.schema).execute(TICKETS_QUERY, context=BaseTestContext(user).get_request())
         self.assertNotIn('errors', result, result.get('errors'))
-        return {edge['node']['code']: edge['node'] for edge in result['data']['tickets']['edges']}
+        nodes = {from_global_id(edge['node']['id'])[1]: edge['node'] for edge in result['data']['tickets']['edges']}
+        codes = dict(Ticket.objects.filter(code__startswith='FLAGRL').values_list('id', 'code'))
+        return {code: nodes[str(ticket_id)] for ticket_id, code in codes.items() if str(ticket_id) in nodes}
 
     def test_flag_restricted_reader_is_restricted_on_open_category(self):
         self.assertEqual(
@@ -129,6 +133,7 @@ class FlagRestrictedTicketListTest(TestCase):
         self.assertEqual(node['status'], 'RESOLVED')
         self.assertEqual(node['category'], OPEN_CATEGORY)
         self.assertEqual(node['priority'], 'High')
+        self.assertEqual(node['code'], RESTRICTED_VALUE)
         self.assertEqual(node['title'], RESTRICTED_VALUE)
         self.assertEqual(node['description'], RESTRICTED_VALUE)
         self.assertEqual(node['accessLevel'], GrievanceAccessControl.ACCESS_RESTRICTED)

@@ -8,6 +8,7 @@ from django.core.cache import cache
 from django.test import TestCase
 from graphene import Schema
 from graphene.test import Client
+from graphql_relay import from_global_id
 
 from core.models.openimis_graphql_test_case import BaseTestContext
 from core.test_helpers import create_test_interactive_user, create_test_role
@@ -30,7 +31,7 @@ TICKETS_QUERY = '''
         tickets {
             edges {
                 node {
-                    code
+                    id
                     description
                     resolution
                     accessLevel
@@ -107,7 +108,8 @@ class AccessLevelGeneratedRightsTest(TestCase):
             TICKETS_QUERY, context=BaseTestContext(user).get_request())
         self.assertNotIn('errors', result)
         nodes = [edge['node'] for edge in result['data']['tickets']['edges']]
-        return next(node for node in nodes if node['code'] == code)
+        ticket_id = str(Ticket.objects.get(code=code).id)
+        return next(node for node in nodes if from_global_id(node['id'])[1] == ticket_id)
 
     def test_items_generate_no_delete_right(self):
         self.assertNotIn('delete', self.category_rights)

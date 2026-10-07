@@ -10,6 +10,7 @@ from django.core.cache import cache
 from django.test import TestCase
 from graphene import Schema
 from graphene.test import Client
+from graphql_relay import from_global_id
 
 from core.models.openimis_graphql_test_case import BaseTestContext
 from core.test_helpers import create_test_interactive_user, create_test_role
@@ -29,8 +30,8 @@ FLAG = 'FVIS_SENSITIVE'
 
 TICKETS_QUERY = '''
     query {
-        tickets(code_Istartswith: "%s"%s) {
-            edges { node { code } }
+        tickets%s {
+            edges { node { id } }
         }
     }
 '''
@@ -85,10 +86,14 @@ class TicketFilterFieldVisibilityTest(TestCase):
                flags=flags, status='OPEN', **fields).save(user=self.reader)
 
     def _codes(self, user, arguments=''):
-        query = TICKETS_QUERY % (PREFIX, ', ' + arguments if arguments else '')
+        """Codes, without PREFIX, of this test's tickets the list returns to user."""
+        query = TICKETS_QUERY % (f'({arguments})' if arguments else '')
         result = Client(self.schema).execute(query, context=BaseTestContext(user).get_request())
         self.assertNotIn('errors', result, result.get('errors'))
-        return sorted(edge['node']['code'][len(PREFIX):] for edge in result['data']['tickets']['edges'])
+        codes = {str(ticket_id): code for ticket_id, code in
+                 Ticket.objects.filter(code__startswith=PREFIX).values_list('id', 'code')}
+        listed = (from_global_id(edge['node']['id'])[1] for edge in result['data']['tickets']['edges'])
+        return sorted(codes[ticket_id][len(PREFIX):] for ticket_id in listed if ticket_id in codes)
 
     def test_restricted_reader_lists_the_tickets_of_the_categories_it_may_see(self):
         self.assertEqual(
@@ -125,8 +130,11 @@ class TicketFilterFieldVisibilityTest(TestCase):
         self.assertEqual(
             self._codes(self.reader, 'attendingStaff_Username: "fvis_reader"'), ['FLAG-LOW', 'PRV-LOW'])
 
-    def test_code_filter_applies_to_every_ticket(self):
-        self.assertEqual(self._codes(self.restricted_reader, 'code: "%sPRV-LOW"' % PREFIX), ['PRV-LOW'])
+    def test_code_filter_applies_where_code_is_visible(self):
+        # PRV tickets hide code to the restricted reader; OPEN tickets show it.
+        self.assertEqual(self._codes(self.restricted_reader, 'code: "%sPRV-LOW"' % PREFIX), [])
+        self.assertEqual(self._codes(self.restricted_reader, 'code: "%sOPEN-LOW"' % PREFIX), ['OPEN-LOW'])
+        self.assertEqual(self._codes(self.reader, 'code: "%sPRV-LOW"' % PREFIX), ['PRV-LOW'])
 
     def test_reader_filters_every_ticket(self):
         self.assertEqual(self._codes(self.reader, 'priority_Icontains: "Low"'),

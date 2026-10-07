@@ -23,8 +23,9 @@ logger = logging.getLogger(__name__)
 RESTRICTED_VALUE = "[Restricted]"
 
 # Fields that are always safe to filter on regardless of access level:
-# TicketGQLType returns them unrestricted at every access level.
-_ALWAYS_FILTERABLE = frozenset({'id', 'version', 'code', 'key'})
+# TicketGQLType returns them unrestricted at every access level. Every other
+# ticket column resolves through TicketGQLType._should_restrict_field.
+_ALWAYS_FILTERABLE = frozenset({'id', 'version'})
 
 # Shared filter field definitions used by TicketFilterSet and CommentGQLType
 TICKET_FILTER_FIELDS = {
@@ -143,6 +144,12 @@ class TicketGQLType(DjangoObjectType):
     reporter_first_name = graphene.String()
     reporter_last_name = graphene.String()
     reporter_dob = graphene.String()
+
+    # Columns that are non-null in the model but resolve to null when restricted.
+    is_deleted = graphene.Boolean()
+    user_created = graphene.Field(UserGQLType)
+    user_updated = graphene.Field(UserGQLType)
+    date_valid_from = graphene.DateTime()
 
     # Access level for this ticket based on user's rights
     access_level = graphene.String()
@@ -320,6 +327,42 @@ class TicketGQLType(DjangoObjectType):
     @staticmethod
     def resolve_due_date(root, info):
         return TicketGQLType._restricted_resolve(root, info, 'due_date', restricted_value=None)
+
+    @staticmethod
+    def resolve_code(root, info):
+        return TicketGQLType._restricted_resolve(root, info, 'code', preserve_none=True)
+
+    @staticmethod
+    def resolve_key(root, info):
+        return TicketGQLType._restricted_resolve(root, info, 'key', preserve_none=True)
+
+    @staticmethod
+    def resolve_date_updated(root, info):
+        return TicketGQLType._restricted_resolve(root, info, 'date_updated', restricted_value=None)
+
+    @staticmethod
+    def resolve_user_created(root, info):
+        return TicketGQLType._restricted_resolve(root, info, 'user_created', restricted_value=None)
+
+    @staticmethod
+    def resolve_user_updated(root, info):
+        return TicketGQLType._restricted_resolve(root, info, 'user_updated', restricted_value=None)
+
+    @staticmethod
+    def resolve_date_valid_from(root, info):
+        return TicketGQLType._restricted_resolve(root, info, 'date_valid_from', restricted_value=None)
+
+    @staticmethod
+    def resolve_date_valid_to(root, info):
+        return TicketGQLType._restricted_resolve(root, info, 'date_valid_to', restricted_value=None)
+
+    @staticmethod
+    def resolve_replacement_uuid(root, info):
+        return TicketGQLType._restricted_resolve(root, info, 'replacement_uuid', restricted_value=None)
+
+    @staticmethod
+    def resolve_is_deleted(root, info):
+        return TicketGQLType._restricted_resolve(root, info, 'is_deleted', restricted_value=None)
 
     @classmethod
     def get_queryset(cls, queryset, info):
