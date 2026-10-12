@@ -16,6 +16,7 @@ from django.core.cache import cache
 from django.test import TestCase
 from graphene import Schema
 from graphene.test import Client
+from graphql_relay import from_global_id
 
 from core.models.openimis_graphql_test_case import BaseTestContext
 from core.test_helpers import create_test_interactive_user, create_test_role
@@ -37,34 +38,40 @@ ANONYMIZED = {ANON_CATEGORY: ['channel', 'attending_staff', 'json_ext']}
 PRV = ['PRV-1', 'PRV-2']
 ANON = ['ANON-1', 'ANON-2']
 
+# Tickets are selected by category and told apart by id: both stay readable
+# at the restricted level, where code is hidden like any column the
+# category does not list in visible_fields.
 TICKETS_QUERY = '''
     query {
-        %s(code_Istartswith: "%s"%s) {
-            edges { node { code } }
+        %s(category_Istartswith: "%s"%s) {
+            edges { node { id } }
         }
     }
 '''
 
 COMMENTS_QUERY = '''
     query {
-        comments(ticket_Code_Istartswith: "%s"%s) {
+        comments(ticket_Category_Istartswith: "%s"%s) {
             totalCount
-            edges { node { comment ticket { code } } }
+            edges { node { comment } }
         }
     }
 '''
 
 COMMENT_SET_QUERY = '''
     query {
-        tickets(code: "%s") {
+        tickets(id: "%s") {
             edges { node { commentSet(%s) { edges { node { comment } } } } }
         }
     }
 '''
 
+CATEGORY_PREFIX = 'hfo_'
+
 
 class HiddenFieldOrderAndCommentFiltersTest(TestCase):
     def setUp(self):
+        self._ticket_ids = {}
         self._snapshot = setup_grievance_config({
             'grievance_types': [
                 OPEN_CATEGORY,
@@ -101,6 +108,8 @@ class HiddenFieldOrderAndCommentFiltersTest(TestCase):
         self._ticket('ANON-1', ANON_CATEGORY, title='oo', channel='c9', attending_staff=staff_z, rank=9)
         self._ticket('ANON-2', ANON_CATEGORY, title='pp', channel='c0', attending_staff=staff_a, rank=0)
         self.schema = Schema(query=Query)
+        self.ticket_ids = {suffix: str(ticket_id) for suffix, ticket_id in self._ticket_ids.items()}
+        self.suffix_by_id = {ticket_id: suffix for suffix, ticket_id in self.ticket_ids.items()}
 
     def _user(self, username, rights):
         empty_role = create_test_role([], name=f'NoRights_{username}')
@@ -113,6 +122,7 @@ class HiddenFieldOrderAndCommentFiltersTest(TestCase):
         ticket = Ticket(code=PREFIX + suffix, description=description, category=category, status='OPEN',
                         json_ext={'rank': rank} if rank is not None else {}, **fields)
         ticket.save(user=self.admin)
+        self._ticket_ids[suffix] = ticket.id
         Comment(ticket_id=ticket.id, comment=f'comment on {suffix}').save(user=self.admin)
 
     def _execute(self, user, query):
@@ -121,59 +131,61 @@ class HiddenFieldOrderAndCommentFiltersTest(TestCase):
         return result['data']
 
     def _ticket_codes(self, user, arguments='', field='tickets'):
-        query = TICKETS_QUERY % (field, PREFIX, ', ' + arguments if arguments else '')
-        return [edge['node']['code'][len(PREFIX):] for edge in self._execute(user, query)[field]['edges']]
+        query = TICKETS_QUERY % (field, CATEGORY_PREFIX, ', ' + arguments if arguments else '')
+        return [self.suffix_by_id[from_global_id(edge['node']['id'])[1]]
+                for edge in self._execute(user, query)[field]['edges']]
 
     def _comment_codes(self, user, arguments=''):
-        data = self._execute(user, COMMENTS_QUERY % (PREFIX, ', ' + arguments if arguments else ''))['comments']
-        codes = [edge['node']['ticket']['code'][len(PREFIX):] for edge in data['edges']]
+        data = self._execute(user, COMMENTS_QUERY % (CATEGORY_PREFIX, ', ' + arguments if arguments else ''))['comments']
+        codes = [edge['node']['comment'][len('comment on '):] for edge in data['edges']]
         self.assertEqual(data['totalCount'], len(codes))
-        for edge, code in zip(data['edges'], codes):
-            self.assertEqual(edge['node']['comment'], f'comment on {code}')
         return codes
+
+    def _by_id(self, suffixes):
+        return sorted(suffixes, key=lambda suffix: self.ticket_ids[suffix])
 
     @staticmethod
     def _among(codes, subset):
         return [code for code in codes if code in subset]
 
     def _assert_unordered_by_hidden_field(self, ascending, descending, hidden):
-        # Ordered by the field then by code: the tickets hiding the field
-        # come in code order whatever the direction.
-        self.assertEqual(self._among(ascending, hidden), sorted(hidden))
-        self.assertEqual(self._among(descending, hidden), sorted(hidden))
+        # Ordered by the field then by id: the tickets hiding the field come
+        # in id order whatever the direction.
+        self.assertEqual(self._among(ascending, hidden), self._by_id(hidden))
+        self.assertEqual(self._among(descending, hidden), self._by_id(hidden))
 
     def test_ordering_on_a_restricted_hidden_field_leaves_those_tickets_unordered_by_it(self):
-        ascending = self._ticket_codes(self.restricted_reader, 'orderBy: ["priority", "code"]')
-        descending = self._ticket_codes(self.restricted_reader, 'orderBy: ["-priority", "code"]')
+        ascending = self._ticket_codes(self.restricted_reader, 'orderBy: ["priority", "id"]')
+        descending = self._ticket_codes(self.restricted_reader, 'orderBy: ["-priority", "id"]')
 
         self._assert_unordered_by_hidden_field(ascending, descending, PRV)
         self.assertEqual(self._among(ascending, ['OPEN-A', 'OPEN-B']), ['OPEN-A', 'OPEN-B'])
         self.assertEqual(self._among(descending, ['OPEN-A', 'OPEN-B']), ['OPEN-B', 'OPEN-A'])
 
     def test_reader_seeing_the_field_orders_every_ticket_by_it(self):
-        ascending = self._ticket_codes(self.reader, 'orderBy: ["priority", "code"]')
+        ascending = self._ticket_codes(self.reader, 'orderBy: ["priority", "id"]')
         self.assertEqual(self._among(ascending, PRV + ['OPEN-A', 'OPEN-B']), ['PRV-2', 'OPEN-A', 'OPEN-B', 'PRV-1'])
 
     def test_ordering_on_an_anonymized_field_leaves_those_tickets_unordered_by_it(self):
-        ascending = self._ticket_codes(self.reader, 'orderBy: ["channel", "code"]')
-        descending = self._ticket_codes(self.reader, 'orderBy: ["-channel", "code"]')
+        ascending = self._ticket_codes(self.reader, 'orderBy: ["channel", "id"]')
+        descending = self._ticket_codes(self.reader, 'orderBy: ["-channel", "id"]')
 
         self._assert_unordered_by_hidden_field(ascending, descending, ANON)
         self.assertEqual(self._among(ascending, ['OPEN-A', 'OPEN-B']), ['OPEN-A', 'OPEN-B'])
 
     def test_superuser_orders_anonymized_fields(self):
-        ascending = self._ticket_codes(self.admin, 'orderBy: ["channel", "code"]')
+        ascending = self._ticket_codes(self.admin, 'orderBy: ["channel", "id"]')
         self.assertEqual(self._among(ascending, ANON + ['OPEN-A']), ['ANON-2', 'OPEN-A', 'ANON-1'])
 
     def test_related_path_ordering_follows_the_visibility_of_its_field(self):
-        ascending = self._ticket_codes(self.reader, 'orderBy: ["attendingStaff__username", "code"]')
-        descending = self._ticket_codes(self.reader, 'orderBy: ["-attendingStaff__username", "code"]')
+        ascending = self._ticket_codes(self.reader, 'orderBy: ["attendingStaff__username", "id"]')
+        descending = self._ticket_codes(self.reader, 'orderBy: ["-attendingStaff__username", "id"]')
 
         self._assert_unordered_by_hidden_field(ascending, descending, ANON)
 
     def test_json_ext_key_ordering_follows_the_visibility_of_json_ext(self):
-        ascending = self._ticket_codes(self.reader, 'orderBy: ["jsonExt__rank", "code"]')
-        descending = self._ticket_codes(self.reader, 'orderBy: ["-jsonExt__rank", "code"]')
+        ascending = self._ticket_codes(self.reader, 'orderBy: ["jsonExt__rank", "id"]')
+        descending = self._ticket_codes(self.reader, 'orderBy: ["-jsonExt__rank", "id"]')
 
         self._assert_unordered_by_hidden_field(ascending, descending, ANON)
         self.assertEqual(self._among(ascending, ['OPEN-A', 'OPEN-B']), ['OPEN-A', 'OPEN-B'])
@@ -181,14 +193,14 @@ class HiddenFieldOrderAndCommentFiltersTest(TestCase):
 
     def test_ordering_on_a_visible_field_is_unchanged(self):
         self.assertEqual(
-            self._ticket_codes(self.restricted_reader, 'orderBy: ["-code"]'),
-            ['PRV-2', 'PRV-1', 'OPEN-B', 'OPEN-A', 'ANON-2', 'ANON-1'])
+            self._ticket_codes(self.restricted_reader, 'orderBy: ["-category", "id"]'),
+            self._by_id(PRV) + self._by_id(['OPEN-A', 'OPEN-B']) + self._by_id(ANON))
 
     def test_resolver_ordering_on_a_hidden_field_leaves_those_tickets_unordered_by_it(self):
         # ticketDetails orders by title, which PRV tickets hide from this reader.
         codes = self._ticket_codes(self.restricted_reader, field='ticketDetails')
         self.assertEqual(codes[:4], ['OPEN-A', 'OPEN-B', 'ANON-1', 'ANON-2'])
-        self.assertEqual(sorted(codes[4:]), PRV)
+        self.assertEqual(codes[4:], self._by_id(PRV))
 
         self.assertEqual(self._ticket_codes(self.reader, field='ticketDetails')[0], 'PRV-2')
 
@@ -210,13 +222,13 @@ class HiddenFieldOrderAndCommentFiltersTest(TestCase):
             self._comment_codes(self.reader, 'ticket_AttendingStaff_Username: "hfo_staff_z"'), [])
 
     def test_comment_ordering_on_a_hidden_ticket_field_leaves_those_comments_unordered_by_it(self):
-        ascending = self._comment_codes(self.restricted_reader, 'orderBy: ["ticket__priority", "ticket__code"]')
-        descending = self._comment_codes(self.restricted_reader, 'orderBy: ["-ticket__priority", "ticket__code"]')
+        ascending = self._comment_codes(self.restricted_reader, 'orderBy: ["ticket__priority", "ticket__id"]')
+        descending = self._comment_codes(self.restricted_reader, 'orderBy: ["-ticket__priority", "ticket__id"]')
 
         self._assert_unordered_by_hidden_field(ascending, descending, PRV)
 
     def test_ticket_comment_set_filter_on_a_hidden_ticket_field_leaves_out_its_comments(self):
-        query = COMMENT_SET_QUERY % (PREFIX + 'PRV-1', 'ticket_Priority_Icontains: "Z"')
+        query = COMMENT_SET_QUERY % (self.ticket_ids['PRV-1'], 'ticket_Priority_Icontains: "Z"')
 
         def comments(user):
             edges = self._execute(user, query)['tickets']['edges']
@@ -241,5 +253,5 @@ class HiddenFieldOrderAndCommentFiltersTest(TestCase):
         self.assertEqual(len(ordered.query.order_by), 2)
 
     def test_ordering_without_a_masked_term_is_left_as_is(self):
-        queryset = Ticket.objects.order_by('-code')
+        queryset = Ticket.objects.order_by('-version')
         self.assertIs(order_without_hidden_fields(queryset, self.restricted_reader), queryset)
