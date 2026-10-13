@@ -38,6 +38,8 @@ The system uses ` > ` (space-greater than-space) as the hierarchy separator in c
 
 The separator is defined as `CATEGORY_SEPARATOR` in `apps.py` and imported where needed.
 
+Earlier versions of the module stored a sub-category as `parent|child`. A ticket stored that way follows `parent > child` for access control: the ticket lists keep it for the users who may read `parent > child`, and its rights, default priority and flags, and visible fields are those of `parent > child`. New tickets must use a configured name.
+
 ### Categories Configuration
 
 The module supports both simple and enhanced category configurations:

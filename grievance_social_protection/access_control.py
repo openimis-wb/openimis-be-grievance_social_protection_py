@@ -53,6 +53,36 @@ class GrievanceAccessControl:
         PERM_DELETE: 'gql_mutation_delete_tickets_perms',
     }
 
+    # Separator of a sub-category in the category names earlier versions of
+    # the module stored ('parent|child').
+    LEGACY_CATEGORY_SEPARATOR = '|'
+
+    @classmethod
+    def configured_category_name(cls, category_name):
+        """The configured name of a stored category: a sub-category stored
+        'parent|child' is 'parent > child'."""
+        if not category_name:
+            return category_name
+        return category_name.replace(cls.LEGACY_CATEGORY_SEPARATOR, CATEGORY_SEPARATOR)
+
+    @classmethod
+    def stored_category_names(cls, category_names):
+        """The configured category names, each sub-category also spelled
+        'parent|child' as tickets may store it."""
+        stored = []
+        for name in category_names:
+            stored.append(name)
+            legacy = name.replace(CATEGORY_SEPARATOR, cls.LEGACY_CATEGORY_SEPARATOR)
+            if legacy != name:
+                stored.append(legacy)
+        return stored
+
+    @classmethod
+    def _configured_name(cls, name, config_attr):
+        if config_attr == 'processed_categories':
+            return cls.configured_category_name(name)
+        return name
+
     @staticmethod
     def parse_flags(flags):
         """
@@ -107,6 +137,7 @@ class GrievanceAccessControl:
         if not user or user.is_anonymous:
             return False
 
+        name = cls._configured_name(name, config_attr)
         processed = getattr(TicketConfig, config_attr, {})
         if not processed or name not in processed:
             return True
@@ -155,6 +186,7 @@ class GrievanceAccessControl:
         if not user or user.is_anonymous:
             return False
         processed = getattr(TicketConfig, config_attr, {}) or {}
+        name = cls._configured_name(name, config_attr)
         right = processed.get(name, {}).get('generated_rights', {}).get(access_type)
         return bool(right) and user.has_perm(str(right))
 
@@ -181,6 +213,7 @@ class GrievanceAccessControl:
     @classmethod
     def _has_restrictions(cls, name, config_attr):
         """Check if an item has any access restrictions"""
+        name = cls._configured_name(name, config_attr)
         processed = getattr(TicketConfig, config_attr, {})
         if not processed or name not in processed:
             return False
@@ -332,7 +365,7 @@ class GrievanceAccessControl:
         # Include NULL/blank category tickets if the default grievance type is accessible,
         # so legacy tickets without a category remain visible.
         if TicketConfig.processed_categories:
-            category_filter = Q(category__in=accessible_categories)
+            category_filter = Q(category__in=cls.stored_category_names(accessible_categories))
             if TicketConfig.default_grievance_type in accessible_categories:
                 category_filter |= Q(category__isnull=True) | Q(category='')
             queryset = queryset.filter(category_filter)
@@ -369,6 +402,7 @@ class GrievanceAccessControl:
     def get_category_defaults(cls, category_name):
         """Get default flags and priority for a category"""
 
+        category_name = cls.configured_category_name(category_name)
         if not TicketConfig.processed_categories or category_name not in TicketConfig.processed_categories:
             return {'priority': 'Medium', 'default_flags': []}
 
@@ -462,6 +496,7 @@ class GrievanceAccessControl:
         the category's visible_fields, or the basic fields when it has none.
         """
         processed = TicketConfig.processed_categories or {}
+        category_name = cls.configured_category_name(category_name)
         visible_fields = processed.get(category_name, {}).get('visible_fields') if category_name else None
         if visible_fields:
             return list(visible_fields)
@@ -503,17 +538,13 @@ class GrievanceAccessControl:
             entries.append((key, names))
         return entries
 
-    # Separator of a sub-category in the category names earlier versions of
-    # the module stored ('parent|child').
-    LEGACY_CATEGORY_SEPARATOR = '|'
-
     @classmethod
     def _anonymized_key_applies(cls, key, category_name):
         if key == DEFAULT_STRING:
             return True
         if not category_name:
             return False
-        category_name = category_name.replace(cls.LEGACY_CATEGORY_SEPARATOR, CATEGORY_SEPARATOR)
+        category_name = cls.configured_category_name(category_name)
         return category_name == key or category_name.startswith(f"{key}{CATEGORY_SEPARATOR}")
 
     @classmethod
@@ -568,7 +599,7 @@ class GrievanceAccessControl:
         for name in categories:
             level = cls.get_user_access_level(user, name)
             if level in by_level:
-                by_level[level].append(Q(category=name))
+                by_level[level].append(Q(category__in=cls.stored_category_names([name])))
         for name in flags:
             level = cls.get_user_access_level(user, None, [name])
             if level in by_level:
@@ -640,9 +671,9 @@ class GrievanceAccessControl:
             hiding_categories = [
                 name for name in categories if field_name not in cls.restricted_visible_fields(name)]
             if hiding_categories:
-                hides_field.append(Q(category__in=hiding_categories))
+                hides_field.append(Q(category__in=cls.stored_category_names(hiding_categories)))
             if field_name not in cls.BASIC_VISIBLE_FIELDS:
-                hides_field.append(~Q(category__in=list(categories)))
+                hides_field.append(~Q(category__in=cls.stored_category_names(categories)))
             if hides_field:
                 hidden.append(reduce(operator.or_, by_level[cls.ACCESS_RESTRICTED])
                               & reduce(operator.or_, hides_field))
