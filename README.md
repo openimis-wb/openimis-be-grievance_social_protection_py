@@ -125,7 +125,7 @@ The grievance module automatically generates permission IDs using Django's auth_
 3. **Access Levels** (based on user's rights):
    - **Restricted Access** (`restricted_read` right): 
      - If `visible_fields` is configured: Users see only fields listed in `visible_fields`
-     - If `visible_fields` is not configured: Users see only basic info (id, status, category, priority, date_created)
+     - If `visible_fields` is not configured: Users see only the fields of `default_visible_fields`, by default the basic info (id, status, category, priority, date_created)
      - Non-visible fields show as "[Restricted]" for text fields or null for other types
      - Can only filter queries on visible fields. A filter on a non-visible field, on `tickets` or on the ticket fields of `comments` / `commentSet` (`ticket_...` arguments), leaves out the tickets (or their comments) hiding it
      - An ordering on a non-visible field (`orderBy`, or the ordering of `ticketDetails`) orders the tickets hiding it as if it were null, then by id; on `comments`, `orderBy: "ticket__<field>"` follows the same rule
@@ -225,12 +225,28 @@ The `visible_fields` feature controls field visibility for users with `restricte
 }
 ```
 
-5. **Default Behavior**: If `visible_fields` is not configured, restricted users see a default set of basic fields: `id`, `status`, `category`, `priority`, `date_created`.
+5. **Default Behavior**: If `visible_fields` is not configured, and on a ticket without category, restricted users see the fields of `default_visible_fields` (see below), by default `id`, `status`, `category`, `priority`, `date_created`.
 
 6. **Interaction with Default Flags**: 
    - Categories cannot reduce security set by their default flags
    - If a category has `default_flags: ["confidential"]` and the confidential flag restricts certain fields, the category's `visible_fields` must respect those restrictions
    - This prevents accidental exposure of sensitive information through misconfiguration
+
+#### Default Visible Fields
+
+`default_visible_fields` lists the fields shown at the restricted level on a ticket whose category sets no `visible_fields`, and on a ticket without category:
+
+```json
+{
+  "default_visible_fields": ["id", "status", "category", "priority", "date_created", "code"]
+}
+```
+
+- Empty or absent, the basic fields apply: `id`, `status`, `category`, `priority`, `date_created`.
+- A category's own `visible_fields` take precedence. The read and full levels show every field.
+- Ticket filters and orderings follow the same list, as for `visible_fields`.
+- The names are ticket fields (`code`, `reporter`, `attending_staff`, ...) or `reporter_first_name`, `reporter_last_name`, `reporter_dob`; an unknown name is refused when the configuration is loaded or saved.
+- Unlike `visible_fields`, it adds no permission to any category.
 
 #### Anonymized Fields
 

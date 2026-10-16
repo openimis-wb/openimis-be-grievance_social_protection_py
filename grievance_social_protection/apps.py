@@ -19,6 +19,8 @@ DEFAULT_TIME_RESOLUTION = '5,0'
 DEFAULT_GRIEVANCE_TYPE = 'uncategorized'
 VALID_PERMISSION_TYPES = frozenset({'restricted_read', 'read', 'create', 'update', 'delete'})
 CATEGORY_SEPARATOR = ' > '
+# Ticket fields TicketGQLType resolves from the reporter row, besides the model's own.
+REPORTER_ATTRIBUTE_FIELDS = ('reporter_first_name', 'reporter_last_name', 'reporter_dob')
 
 # ---------------------------------------------------------------------------
 # The module's STATIC rights: 127000-127006.
@@ -83,6 +85,10 @@ DEFAULT_CFG = {
     "grievance_channels": [DEFAULT_STRING, 'Channel A', 'Channel B'],
     "default_responses": {DEFAULT_STRING: DEFAULT_STRING},
     "grievance_anonymized_fields": {DEFAULT_STRING: []},
+    # Fields shown at the restricted level on a ticket whose category sets no
+    # visible_fields or that has no category; empty: the basic fields
+    # (GrievanceAccessControl.BASIC_VISIBLE_FIELDS).
+    "default_visible_fields": [],
     # CRON timedelta: {days},{hours}
     "resolution_times": DEFAULT_TIME_RESOLUTION,
     "default_resolution": {DEFAULT_STRING: DEFAULT_TIME_RESOLUTION, 'Category A': '4,0', 'Category B': '6,12'},
@@ -133,6 +139,7 @@ class TicketConfig(AppConfig):
     grievance_channels = []
     default_responses = {}
     grievance_anonymized_fields = {}
+    default_visible_fields = []
     resolution_times = {}
     default_resolution = {}
     default_grievance_type = DEFAULT_GRIEVANCE_TYPE
@@ -206,6 +213,7 @@ class TicketConfig(AppConfig):
         self.__validate_grievance_dict_fields(cfg, 'default_responses')
         self.__validate_grievance_dict_fields(cfg, 'grievance_anonymized_fields')
         self.__validate_grievance_dict_fields(cfg, 'default_resolution')
+        self.__validate_default_visible_fields(cfg)
         self.__validate_grievance_default_resolution_time(cfg)
 
     def _merge_with_defaults(self, instance):
@@ -254,6 +262,25 @@ class TicketConfig(AppConfig):
             if field_key not in grievance_types:
                 logger.warning('%s in %s not in grievance_types', field_key, field_name)
                 get_grievance_type_options_msg(grievance_types)
+
+    @classmethod
+    def __validate_default_visible_fields(cls, cfg):
+        """default_visible_fields is a list of ticket field names: the model's
+        fields and the reporter attributes TicketGQLType resolves."""
+        fields = cfg.get('default_visible_fields')
+        if not fields:
+            return
+        if not isinstance(fields, (list, tuple)) or not all(isinstance(field, str) for field in fields):
+            raise ValidationError("'default_visible_fields' must be a list of ticket field names.")
+        from .models import Ticket
+        known = {field.name for field in Ticket._meta.get_fields() if field.concrete or not field.auto_created}
+        known.update(REPORTER_ATTRIBUTE_FIELDS)
+        unknown = sorted(set(fields) - known)
+        if unknown:
+            raise ValidationError(
+                f"'default_visible_fields' lists unknown ticket fields {unknown}. "
+                f"Available fields: {sorted(known)}"
+            )
 
     @classmethod
     def __validate_grievance_default_resolution_time(cls, cfg):

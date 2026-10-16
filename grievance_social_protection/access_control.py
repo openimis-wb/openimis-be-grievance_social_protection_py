@@ -40,7 +40,8 @@ class GrievanceAccessControl:
     PERM_UPDATE = 'update'
     PERM_DELETE = 'delete'
 
-    # Fields visible at the 'restricted' level when the category sets no visible_fields
+    # Fields visible at the 'restricted' level when the category sets no
+    # visible_fields and the configuration sets no default_visible_fields
     BASIC_VISIBLE_FIELDS = ('id', 'status', 'category', 'priority', 'date_created')
 
     # Fallback to the module's standard ticket permissions when a category/flag
@@ -465,7 +466,7 @@ class GrievanceAccessControl:
 
         The access level combines the category and the flags (most restrictive
         wins); the field list for 'restricted' comes from the category's
-        visible_fields, or the basic fields when the category has none.
+        visible_fields, or default_visible_fields when the category has none.
 
         Args:
             user: Django user object
@@ -490,17 +491,28 @@ class GrievanceAccessControl:
         return cls.restricted_visible_fields(category_name)
 
     @classmethod
+    def default_visible_fields(cls):
+        """
+        Fields visible at the 'restricted' level on a ticket whose category
+        sets no visible_fields or that has no category: default_visible_fields
+        of the configuration, or BASIC_VISIBLE_FIELDS when it sets none.
+        """
+        configured = getattr(TicketConfig, 'default_visible_fields', None)
+        return list(configured) if configured else list(cls.BASIC_VISIBLE_FIELDS)
+
+    @classmethod
     def restricted_visible_fields(cls, category_name):
         """
         Fields visible at the 'restricted' level on a ticket of the category:
-        the category's visible_fields, or the basic fields when it has none.
+        the category's visible_fields, or default_visible_fields when it has
+        none or the category is blank.
         """
         processed = TicketConfig.processed_categories or {}
         category_name = cls.configured_category_name(category_name)
         visible_fields = processed.get(category_name, {}).get('visible_fields') if category_name else None
         if visible_fields:
             return list(visible_fields)
-        return list(cls.BASIC_VISIBLE_FIELDS)
+        return cls.default_visible_fields()
 
     # Fields an entry of grievance_anonymized_fields hides besides itself: the
     # reporter fields are read from the reporter row, which the reporter JSON
@@ -666,13 +678,13 @@ class GrievanceAccessControl:
             hidden.append(reduce(operator.or_, by_level[cls.ACCESS_NONE]))
         if by_level[cls.ACCESS_RESTRICTED]:
             # At the 'restricted' level the category decides which fields show;
-            # a ticket of an unconfigured or blank category shows the basic fields.
+            # a ticket of an unconfigured or blank category shows default_visible_fields.
             hides_field = []
             hiding_categories = [
                 name for name in categories if field_name not in cls.restricted_visible_fields(name)]
             if hiding_categories:
                 hides_field.append(Q(category__in=cls.stored_category_names(hiding_categories)))
-            if field_name not in cls.BASIC_VISIBLE_FIELDS:
+            if field_name not in cls.default_visible_fields():
                 hides_field.append(~Q(category__in=cls.stored_category_names(categories)))
             if hides_field:
                 hidden.append(reduce(operator.or_, by_level[cls.ACCESS_RESTRICTED])
