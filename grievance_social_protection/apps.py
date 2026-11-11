@@ -125,6 +125,9 @@ class TicketConfig(AppConfig):
         register_reloader(MODULE_NAME, self._reload_module_config)
 
     def __process_config(self, cfg):
+        # Writes the processed structures into cfg only: validation runs it on
+        # configurations that are never loaded, so the live TicketConfig state
+        # changes in __load_config alone.
         self.__process_unified_categories(cfg)
         self.__process_unified_flags(cfg)
 
@@ -148,6 +151,10 @@ class TicketConfig(AppConfig):
         cfg = self._merge_with_defaults(instance)
         self.__process_config(cfg)
         self.__load_config(cfg)
+        # The reloaded categories and flags carry empty generated_rights until
+        # this runs; GrievanceAccessControl denies them in the meantime.
+        from .rights import GrievanceRightsManager
+        GrievanceRightsManager.generate_automatic_rights(TicketConfig)
 
     @classmethod
     def __validate_grievance_dict_fields(cls, cfg, field_name):
@@ -418,7 +425,6 @@ class TicketConfig(AppConfig):
         cfg['processed_categories'] = processed_categories
         # Update flat list for backward compatibility
         cfg['grievance_types'] = flat_types
-        TicketConfig.processed_categories = processed_categories
 
     @classmethod
     def __process_unified_flags(cls, cfg):
@@ -465,7 +471,6 @@ class TicketConfig(AppConfig):
         cfg['processed_flags'] = processed_flags
         # Update flat list for backward compatibility
         cfg['grievance_flags'] = flat_flags
-        TicketConfig.processed_flags = processed_flags
 
     @classmethod
     def __load_config(cls, cfg):
