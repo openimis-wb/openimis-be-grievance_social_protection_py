@@ -206,8 +206,8 @@ class TicketConfig(AppConfig):
 
     def __process_config(self, cfg):
         # Writes the processed structures into cfg only: validation runs it on
-        # configurations that are never loaded, so the live TicketConfig state
-        # changes in __load_config alone.
+        # configurations that are never loaded, so it leaves TicketConfig as it
+        # is and __load_config publishes the result.
         self.__process_unified_categories(cfg)
         self.__process_unified_flags(cfg)
 
