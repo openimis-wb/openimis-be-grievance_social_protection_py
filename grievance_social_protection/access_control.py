@@ -148,7 +148,7 @@ class GrievanceAccessControl:
         if not processed or name not in processed:
             return True
 
-        info = processed[name]
+        info = cls._entry_info(name, config_attr)
         generated_rights = info.get('generated_rights', {})
 
         report_key = (config_attr, name)
@@ -202,10 +202,20 @@ class GrievanceAccessControl:
         and the user holds it. No fallback to the module's base rights."""
         if not user or user.is_anonymous:
             return False
-        processed = getattr(TicketConfig, config_attr, {}) or {}
         name = cls._configured_name(name, config_attr)
-        right = processed.get(name, {}).get('generated_rights', {}).get(access_type)
+        right = cls._entry_info(name, config_attr).get('generated_rights', {}).get(access_type)
         return bool(right) and user.has_perm(str(right))
+
+    @classmethod
+    def _entry_info(cls, name, config_attr):
+        """The configuration of a category/flag ({} when not configured). When
+        its rights are missing because ready() skipped the generation, the
+        generation runs first."""
+        info = (getattr(TicketConfig, config_attr, {}) or {}).get(name, {})
+        if TicketConfig.rights_generation_pending and cls._rights_missing(info):
+            TicketConfig.generate_skipped_rights()
+            info = (getattr(TicketConfig, config_attr, {}) or {}).get(name, {})
+        return info
 
     @classmethod
     def check_category_access(cls, user, category_name, access_type=PERM_READ):
