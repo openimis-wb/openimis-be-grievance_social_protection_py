@@ -1,7 +1,6 @@
 """
 Tests for the ticketsStr query arguments.
 """
-from core.test_helpers import create_test_interactive_user
 from core.models.openimis_graphql_test_case import openIMISGraphQLTestCase, BaseTestContext
 from graphene import Schema
 from graphene.test import Client
@@ -9,6 +8,7 @@ from graphene.test import Client
 from grievance_social_protection.models import Ticket
 from grievance_social_protection.schema import Query
 from grievance_social_protection.tests.test_helpers import (
+    create_user_with_rights,
     setup_grievance_config, restore_grievance_config, assign_rights_to_user,
 )
 
@@ -19,7 +19,7 @@ class TicketsStrQueryTest(openIMISGraphQLTestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        cls.user = create_test_interactive_user(username='tickets_str_viewer', roles=[1])
+        cls.user = create_user_with_rights('tickets_str_viewer', [], 'tickets_str_viewer_base')
         cls.schema = Schema(query=Query)
 
     def setUp(self):
