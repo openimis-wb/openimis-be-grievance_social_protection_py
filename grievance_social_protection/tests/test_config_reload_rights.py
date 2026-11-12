@@ -66,6 +66,13 @@ class ReloadRightsTestBase(TestCase):
         cls.user_with_vbg = create_test_grievance_user(username='reload_rights_vbg')
 
     def setUp(self):
+        # Filters registered by other installed modules would narrow the
+        # visible tickets; these tests exercise the category and flag rules.
+        # create=True: the registry exists only where the hook is installed.
+        registry = mock.patch.object(
+            GrievanceAccessControl, 'ticket_queryset_filters', [], create=True)
+        registry.start()
+        self.addCleanup(registry.stop)
         self._state = _ticket_config_state()
         self._default_cfg = copy.deepcopy(grievance_apps.DEFAULT_CFG)
 
