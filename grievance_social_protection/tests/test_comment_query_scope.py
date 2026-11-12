@@ -1,7 +1,8 @@
 """
 The comments query returns the comments of the tickets the user may see:
 the tickets filter_ticket_queryset keeps for the user, at an access level
-other than 'none'.
+other than 'none', with ROW_SECURITY on or off. Attending a ticket adds
+nothing to that set.
 """
 from django.core.cache import cache
 from django.test import TestCase
@@ -100,3 +101,11 @@ class CommentQueryScopeTest(TestCase):
             self._ticket_codes(self.full_reader),
             ['CSQ-FLAGGED', 'CSQ-FLAGGED-JSON', 'CSQ-OPEN', 'CSQ-SECRET'],
         )
+
+    def test_comment_scope_applies_without_row_security(self):
+        with self.settings(ROW_SECURITY=False):
+            self.assertEqual(self._ticket_codes(self.no_access_user), ['CSQ-OPEN'])
+
+    def test_attending_staff_does_not_read_comments_of_a_ticket_outside_its_rights(self):
+        Ticket.objects.filter(code__in=['CSQ-SECRET', 'CSQ-FLAGGED']).update(attending_staff=self.no_access_user)
+        self.assertEqual(self._ticket_codes(self.no_access_user), ['CSQ-OPEN'])
