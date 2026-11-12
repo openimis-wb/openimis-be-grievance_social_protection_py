@@ -9,10 +9,10 @@ from graphene import Schema
 from graphene.test import Client
 
 from core.models.openimis_graphql_test_case import openIMISGraphQLTestCase, BaseTestContext
-from core.test_helpers import create_test_interactive_user
 from grievance_social_protection.access_control import GrievanceAccessControl
 from grievance_social_protection.schema import Query
 from grievance_social_protection.tests.test_helpers import (
+    create_user_with_rights,
     setup_grievance_config, restore_grievance_config,
     assign_rights_to_user, get_rights,
 )
@@ -43,8 +43,8 @@ class CategoryHierarchyCanCreateTest(openIMISGraphQLTestCase):
     @classmethod
     def setUpClass(cls):
         super().setUpClass()
-        cls.field_operator = create_test_interactive_user(username='hier_field_operator', roles=[1])
-        cls.case_manager = create_test_interactive_user(username='hier_case_manager', roles=[1])
+        cls.field_operator = create_user_with_rights('hier_field_operator', [], 'hier_field_operator_base')
+        cls.case_manager = create_user_with_rights('hier_case_manager', [], 'hier_case_manager_base')
         cls.gql_client = Client(Schema(query=Query))
 
     def setUp(self):
