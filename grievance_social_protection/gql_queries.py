@@ -129,6 +129,10 @@ def check_comment_perms(info):
         raise PermissionDenied(_("Unauthorized"))
 
 
+def _authenticated(user):
+    return user is not None and not user.is_anonymous
+
+
 class TicketGQLType(DjangoObjectType):
     client_mutation_id = graphene.String()
     reporter = graphene.JSONString()
@@ -305,6 +309,16 @@ class TicketGQLType(DjangoObjectType):
     def resolve_due_date(root, info):
         return TicketGQLType._restricted_resolve(root, info, 'due_date', restricted_value=None)
 
+    @classmethod
+    def get_queryset(cls, queryset, info):
+        """The tickets the ticket list queries return: the ticket read right,
+        then filter_ticket_queryset. Applies to node() and to every
+        connection of tickets."""
+        user = info.context.user
+        if not _authenticated(user) or not user.has_perms(TicketConfig.gql_query_tickets_perms):
+            return queryset.none()
+        return GrievanceAccessControl.filter_ticket_queryset(queryset, user)
+
     class Meta:
         model = Ticket
         interfaces = (graphene.relay.Node,)
@@ -383,6 +397,16 @@ class CommentGQLType(ScopedQuerysetMixin, DjangoObjectType):
     def resolve_commenter_dob(root, info):
         check_comment_perms(info)
         return CommentGQLType._commenter_attribute(root, 'dob')
+
+    @classmethod
+    def get_queryset(cls, queryset, info):
+        """The comments the comments query returns: the comment read right,
+        then Comment.get_queryset. Applies to node() and to every connection
+        of comments, a ticket's commentSet included."""
+        user = info.context.user
+        if not _authenticated(user) or not user.has_perms(TicketConfig.gql_query_comments_perms):
+            return queryset.none()
+        return super().get_queryset(queryset, info)
 
     class Meta:
         model = Comment
