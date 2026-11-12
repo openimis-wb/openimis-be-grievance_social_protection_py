@@ -2,12 +2,17 @@ import copy
 import logging
 import sys
 import os
+import threading
 
 from django.apps import AppConfig
-from django.db import OperationalError, ProgrammingError
+from django.db import DEFAULT_DB_ALIAS, OperationalError, ProgrammingError, connections, transaction
+from django.db.models.signals import post_migrate
 from django.core.exceptions import ValidationError
 
 logger = logging.getLogger(__name__)
+
+# Serialises the access-time retry of the rights generation ready() skipped.
+_rights_generation_lock = threading.Lock()
 
 MODULE_NAME = "grievance_social_protection"
 
@@ -72,6 +77,9 @@ class TicketConfig(AppConfig):
     processed_flags = {}
     unified_resolution_times = {}
     generated_rights = {}  # Store dynamically generated rights
+    # True while the rights generation ready() skipped for want of database
+    # tables has not run; the first access check runs it once.
+    rights_generation_pending = False
 
     @classmethod
     def get_all_permissions(cls):
@@ -106,16 +114,70 @@ class TicketConfig(AppConfig):
 
         # Generate rights only when the database is available and ready.
         # Skip during migrations, when NO_DATABASE is set, or when
-        # core tables (django_content_type, auth_permission) don't exist yet.
+        # core tables (django_content_type, auth_permission) don't exist yet;
+        # the post_migrate handler generates them once the tables exist.
         if os.environ.get("NO_DATABASE") != "True" and 'migrate' not in sys.argv and 'makemigrations' not in sys.argv:
             try:
                 from .rights import GrievanceRightsManager
                 GrievanceRightsManager.generate_automatic_rights(TicketConfig)
+                TicketConfig.rights_generation_pending = False
             except (OperationalError, ProgrammingError):
+                TicketConfig.rights_generation_pending = True
                 logger.info("Database tables not ready, skipping automatic rights generation.")
 
+        post_migrate.connect(
+            self._generate_rights_after_migrate, sender=self,
+            dispatch_uid=f"{MODULE_NAME}.generate_rights_after_migrate")
         register_validator(MODULE_NAME, self._validate_module_config)
         register_reloader(MODULE_NAME, self._reload_module_config)
+
+    @staticmethod
+    def _rights_tables_exist(using):
+        from django.contrib.auth.models import Permission
+        from django.contrib.contenttypes.models import ContentType
+        from core.models import RoleRight
+
+        existing = set(connections[using].introspection.table_names())
+        return all(model._meta.db_table in existing for model in (Permission, ContentType, RoleRight))
+
+    def _generate_rights_after_migrate(self, using=DEFAULT_DB_ALIAS, **kwargs):
+        # The rights manager writes through the default database.
+        if using != DEFAULT_DB_ALIAS or not self._rights_tables_exist(using):
+            return
+        from .rights import GrievanceRightsManager
+        GrievanceRightsManager.generate_automatic_rights(TicketConfig)
+        TicketConfig.rights_generation_pending = False
+
+    @classmethod
+    def generate_skipped_rights(cls):
+        """
+        Run the rights generation ready() skipped, once per process. When it
+        fails, the categories and flags keep the rights they had before it,
+        and those whose rights are missing stay denied.
+        """
+        if not TicketConfig.rights_generation_pending:
+            return
+        with _rights_generation_lock:
+            if not TicketConfig.rights_generation_pending:
+                return
+            TicketConfig.rights_generation_pending = False
+            from .rights import GrievanceRightsManager
+
+            entries = list(TicketConfig.processed_categories.values()) + list(TicketConfig.processed_flags.values())
+            previous_entry_rights = [(info, info.get('generated_rights', {})) for info in entries]
+            previous_rights = TicketConfig.generated_rights
+            try:
+                # A savepoint: a database error leaves the caller's transaction usable.
+                with transaction.atomic():
+                    GrievanceRightsManager.generate_automatic_rights(TicketConfig)
+            except Exception:
+                # Ids assigned before the failure belong to rows the rollback removed.
+                for info, rights in previous_entry_rights:
+                    info['generated_rights'] = rights
+                TicketConfig.generated_rights = previous_rights
+                logger.exception(
+                    "Rights generation failed; categories and flags without "
+                    "generated rights stay denied.")
 
     def __process_config(self, cfg):
         # Writes the processed structures into cfg only: validation runs it on
@@ -153,6 +215,7 @@ class TicketConfig(AppConfig):
         # this runs; GrievanceAccessControl denies them in the meantime.
         try:
             GrievanceRightsManager.generate_automatic_rights(TicketConfig)
+            TicketConfig.rights_generation_pending = False
         except Exception:
             # The new configuration stays in force. Only entries whose
             # permissions are unchanged keep their rights; new or changed
