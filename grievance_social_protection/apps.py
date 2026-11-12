@@ -118,6 +118,9 @@ class TicketConfig(AppConfig):
         register_reloader(MODULE_NAME, self._reload_module_config)
 
     def __process_config(self, cfg):
+        # Writes the processed structures into cfg only: validation runs it on
+        # configurations that are never loaded, so it leaves TicketConfig as it
+        # is and __load_config publishes the result.
         self.__process_unified_categories(cfg)
         self.__process_unified_flags(cfg)
 
@@ -137,9 +140,40 @@ class TicketConfig(AppConfig):
         self.__validate_config(cfg)
 
     def _reload_module_config(self, instance):
+        from .rights import GrievanceRightsManager
+
         cfg = self._merge_with_defaults(instance)
         self.__process_config(cfg)
+        self.__build_unified_resolution_times(cfg)
+        previous_categories = TicketConfig.processed_categories
+        previous_flags = TicketConfig.processed_flags
+        previous_rights = TicketConfig.generated_rights
         self.__load_config(cfg)
+        # The reloaded categories and flags carry empty generated_rights until
+        # this runs; GrievanceAccessControl denies them in the meantime.
+        try:
+            GrievanceRightsManager.generate_automatic_rights(TicketConfig)
+        except Exception:
+            # The new configuration stays in force. Only entries whose
+            # permissions are unchanged keep their rights; new or changed
+            # restrictions have none and are denied by the access control.
+            self.__carry_over_rights(TicketConfig.processed_categories, previous_categories)
+            self.__carry_over_rights(TicketConfig.processed_flags, previous_flags)
+            TicketConfig.generated_rights = previous_rights
+            logger.exception(
+                "Rights generation failed for the saved configuration; "
+                "entries with changed permissions are denied until it succeeds.")
+            raise
+
+    @staticmethod
+    def __carry_over_rights(current, previous):
+        for name, info in current.items():
+            old = previous.get(name)
+            if old and set(old.get('permissions') or []) == set(info.get('permissions') or []):
+                info['generated_rights'] = old.get('generated_rights', {})
+            else:
+                # Ids assigned before the failure belong to rows the rollback removed.
+                info['generated_rights'] = {}
 
     @classmethod
     def __validate_grievance_dict_fields(cls, cfg, field_name):
@@ -193,20 +227,21 @@ class TicketConfig(AppConfig):
             if resolution_time:
                 cls.__validate_resolution_time_format(resolution_time, f"category '{category_name}'")
 
-        # Build unified resolution times mapping for backward compatibility
-        unified_resolution = {}
+        cls.__build_unified_resolution_times(cfg)
 
-        # Start with legacy default_resolution
-        if dict_field:
-            unified_resolution.update(dict_field)
-
-        # Override/add with category-specific resolution_times
-        for category_name, category_info in processed_categories.items():
+    @classmethod
+    def __build_unified_resolution_times(cls, cfg):
+        """
+        Store in cfg the resolution times by category: the legacy
+        default_resolution entries, overridden by the category-specific
+        resolution_times of the processed categories.
+        """
+        unified_resolution = dict(cfg.get("default_resolution") or {})
+        for category_name, category_info in cfg.get("processed_categories", {}).items():
             resolution_time = category_info.get('resolution_times')
             if resolution_time:
                 unified_resolution[category_name] = resolution_time
 
-        # Store the unified mapping back
         cfg['unified_resolution_times'] = unified_resolution
 
     @classmethod
@@ -391,7 +426,6 @@ class TicketConfig(AppConfig):
         cfg['processed_categories'] = processed_categories
         # Update flat list for backward compatibility
         cfg['grievance_types'] = flat_types
-        TicketConfig.processed_categories = processed_categories
 
     @classmethod
     def __process_unified_flags(cls, cfg):
@@ -438,7 +472,6 @@ class TicketConfig(AppConfig):
         cfg['processed_flags'] = processed_flags
         # Update flat list for backward compatibility
         cfg['grievance_flags'] = flat_flags
-        TicketConfig.processed_flags = processed_flags
 
     @classmethod
     def __load_config(cls, cfg):
