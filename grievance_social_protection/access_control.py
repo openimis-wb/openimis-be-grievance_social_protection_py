@@ -42,6 +42,11 @@ class GrievanceAccessControl:
         PERM_DELETE: 'gql_mutation_delete_tickets_perms',
     }
 
+    # (config_attr, name) pairs whose missing-rights denial was already logged.
+    # An entry is removed once the rights are present, so a later loss is
+    # reported again.
+    _missing_rights_reported = set()
+
     @staticmethod
     def parse_flags(flags):
         """Parse flags from string or list format to list."""
@@ -75,12 +80,16 @@ class GrievanceAccessControl:
         info = processed[name]
         generated_rights = info.get('generated_rights', {})
 
+        report_key = (config_attr, name)
         if cls._rights_missing(info):
-            logger.error(
-                "%s '%s' has permissions %s without generated rights. Denying access.",
-                config_attr, name, sorted(info.get('permissions') or []),
-            )
+            if report_key not in cls._missing_rights_reported:
+                cls._missing_rights_reported.add(report_key)
+                logger.error(
+                    "%s '%s' has permissions %s without generated rights. Denying access.",
+                    config_attr, name, sorted(info.get('permissions') or []),
+                )
             return False
+        cls._missing_rights_reported.discard(report_key)
 
         # No permissions configured: no restrictions
         if not generated_rights:
