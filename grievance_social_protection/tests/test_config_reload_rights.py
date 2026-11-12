@@ -197,6 +197,23 @@ class ConfigReloadRightsTest(ReloadRightsTestBase):
         self.assertNotIn(confidential_ticket.id, visible)
         self.assertIn(public_ticket.id, visible)
 
+    def test_saved_configuration_rebuilds_unified_resolution_times(self):
+        self._apply_with_rights(CONFIG)
+        TicketConfig.unified_resolution_times = {}
+        cfg = {
+            'grievance_types': [
+                'general',
+                {'name': 'VBG', 'permissions': ['read'], 'resolution_times': '1,6'},
+            ],
+            'grievance_flags': ['public'],
+            'default_resolution': {'general': '3,0'},
+        }
+
+        self._save_configuration(cfg)
+
+        self.assertEqual(
+            TicketConfig.unified_resolution_times, {'general': '3,0', 'VBG': '1,6'})
+
 
 class MissingRightsLoggingTest(ReloadRightsTestBase):
     """A denial caused by missing generated rights is reported once per
