@@ -2,7 +2,7 @@ import copy
 import json
 from unittest import mock
 
-from django.core.exceptions import ValidationError
+from django.core.exceptions import PermissionDenied, ValidationError
 from django.test import TestCase
 
 from core.models import ModuleConfiguration
@@ -36,6 +36,11 @@ CONFIG_WITH_NEW_CATEGORY = {
         {'name': 'Fraude', 'permissions': ['read']},
     ],
     'grievance_flags': CONFIG['grievance_flags'],
+}
+
+OPEN_CONFIG = {
+    'grievance_types': ['general', 'VBG'],
+    'grievance_flags': ['public', 'confidential'],
 }
 
 # Rejected by validation: the default flag is not among grievance_flags.
@@ -221,41 +226,83 @@ class ConfigReloadRightsTest(ReloadRightsTestBase):
         self.assertEqual(
             TicketConfig.unified_resolution_times, {'general': '3,0', 'VBG': '1,6'})
 
-    def test_failed_rights_generation_keeps_previous_configuration_and_rights(self):
-        self._apply_with_rights(CONFIG)
-        ticket = self._ticket('VBG')
-        categories = TicketConfig.processed_categories
-        flags = TicketConfig.processed_flags
-        resolution_times = TicketConfig.unified_resolution_times
-        rights_before = get_rights('processed_categories', 'VBG')
-
+    def _save_with_failing_generation(self, cfg):
         with mock.patch('grievance_social_protection.rights.GrievanceRightsManager.generate_automatic_rights',
                         side_effect=RuntimeError('rights table locked')), \
-                self.assertLogs('grievance_social_protection.apps', level='ERROR') as logs:
-            self._save_configuration(CONFIG_WITH_NEW_CATEGORY)
-
+                self.assertLogs('grievance_social_protection.apps', level='ERROR') as logs, \
+                self.assertRaises(RuntimeError):
+            self._save_configuration(cfg)
         self.assertEqual(len(logs.records), 1)
+
+    def _can_update(self, user, category, flags=''):
+        try:
+            GrievanceAccessControl.validate_ticket_access(user, category, flags, 'update')
+            return True
+        except PermissionDenied:
+            return False
+
+    def test_failed_rights_generation_is_reported_and_keeps_unchanged_rights(self):
+        self._apply_with_rights(CONFIG)
+        ticket = self._ticket('VBG')
+        rights_before = get_rights('processed_categories', 'VBG')
+
+        self._save_with_failing_generation(CONFIG_WITH_NEW_CATEGORY)
+
         self.assertTrue(ModuleConfiguration.objects.filter(module=MODULE).exists())
-        self.assertIs(TicketConfig.processed_categories, categories)
-        self.assertIs(TicketConfig.processed_flags, flags)
-        self.assertIs(TicketConfig.unified_resolution_times, resolution_times)
-        self.assertNotIn('Fraude', TicketConfig.processed_categories)
         self.assertEqual(get_rights('processed_categories', 'VBG'), rights_before)
+        self.assertEqual(get_rights('processed_flags', 'confidential'),
+                         TicketConfig.processed_flags['confidential']['generated_rights'])
         self.assertFalse(GrievanceAccessControl.check_category_access(self.user_without_vbg, 'VBG'))
         self.assertTrue(GrievanceAccessControl.check_category_access(self.user_with_vbg, 'VBG'))
         self.assertIn(ticket.id, self._visible_ids(self.user_with_vbg))
         self.assertNotIn(ticket.id, self._visible_ids(self.user_without_vbg))
+        self.assertIn('Fraude', TicketConfig.processed_categories)
+        self.assertFalse(GrievanceAccessControl.check_category_access(self.user_with_vbg, 'Fraude'))
 
     def test_category_without_rights_stays_closed_after_a_failed_generation(self):
         self._apply_without_rights(CONFIG)
 
-        with mock.patch('grievance_social_protection.rights.GrievanceRightsManager.generate_automatic_rights',
-                        side_effect=RuntimeError('rights table locked')), \
-                self.assertLogs('grievance_social_protection.apps', level='ERROR'):
-            self._save_configuration(CONFIG)
+        self._save_with_failing_generation(CONFIG)
 
         self.assertFalse(GrievanceAccessControl.check_category_access(self.user_without_vbg, 'VBG'))
         self.assertFalse(GrievanceAccessControl.check_category_access(self.user_with_vbg, 'VBG'))
+
+    def test_restriction_added_to_a_category_is_enforced_after_a_failed_generation(self):
+        setup_grievance_config(OPEN_CONFIG)
+        ticket = self._ticket('VBG')
+
+        self._save_with_failing_generation(CONFIG)
+
+        user = self.user_without_vbg
+        self.assertFalse(GrievanceAccessControl.check_category_access(user, 'VBG'))
+        self.assertNotIn(ticket.id, self._visible_ids(user))
+        self.assertFalse(self._can_update(user, 'VBG'))
+        self.assertEqual(GrievanceAccessControl.get_user_access_level(user, 'VBG'),
+                         GrievanceAccessControl.ACCESS_NONE)
+
+    def test_restriction_added_to_a_flag_is_enforced_after_a_failed_generation(self):
+        setup_grievance_config(OPEN_CONFIG)
+        ticket = self._ticket('general', 'confidential')
+
+        self._save_with_failing_generation(CONFIG)
+
+        user = self.user_without_vbg
+        self.assertFalse(GrievanceAccessControl.check_flag_access(user, 'confidential'))
+        self.assertNotIn(ticket.id, self._visible_ids(user))
+        self.assertFalse(self._can_update(user, 'general', 'confidential'))
+
+    def test_new_restricted_child_is_enforced_after_a_failed_generation(self):
+        self._apply_with_rights(CONFIG)
+        ticket = self._ticket('VBG > Viol')
+        cfg = copy.deepcopy(CONFIG)
+        cfg['grievance_types'][1]['children'] = [{'name': 'Viol', 'permissions': ['read']}]
+
+        self._save_with_failing_generation(cfg)
+
+        user = self.user_without_vbg
+        self.assertFalse(GrievanceAccessControl.check_category_access(user, 'VBG > Viol'))
+        self.assertNotIn(ticket.id, self._visible_ids(user))
+        self.assertFalse(self._can_update(user, 'VBG > Viol'))
 
 
 class MissingRightsLoggingTest(ReloadRightsTestBase):
