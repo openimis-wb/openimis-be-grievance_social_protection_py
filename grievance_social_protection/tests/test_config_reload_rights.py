@@ -1,5 +1,6 @@
 import copy
 import json
+from unittest import mock
 
 from django.core.exceptions import ValidationError
 from django.test import TestCase
@@ -56,11 +57,8 @@ def _ticket_config_state():
     }
 
 
-class ConfigReloadRightsTest(TestCase):
-    """
-    Saving the module configuration through ModuleConfiguration keeps the
-    category and flag restrictions in force in the saving process.
-    """
+class ReloadRightsTestBase(TestCase):
+    """Configuration state handling shared by the reload tests."""
 
     @classmethod
     def setUpTestData(cls):
@@ -109,6 +107,13 @@ class ConfigReloadRightsTest(TestCase):
     def _visible_ids(user):
         return set(GrievanceAccessControl.filter_ticket_queryset(Ticket.objects.all(), user)
                    .values_list('id', flat=True))
+
+
+class ConfigReloadRightsTest(ReloadRightsTestBase):
+    """
+    Saving the module configuration through ModuleConfiguration keeps the
+    category and flag restrictions in force in the saving process.
+    """
 
     def test_saved_configuration_keeps_vbg_closed_to_user_without_right(self):
         self._apply_with_rights(CONFIG)
@@ -191,3 +196,47 @@ class ConfigReloadRightsTest(TestCase):
         visible = self._visible_ids(self.user_without_vbg)
         self.assertNotIn(confidential_ticket.id, visible)
         self.assertIn(public_ticket.id, visible)
+
+
+class MissingRightsLoggingTest(ReloadRightsTestBase):
+    """A denial caused by missing generated rights is reported once per
+    category or flag, however many checks hit it."""
+
+    def setUp(self):
+        super().setUp()
+        getattr(GrievanceAccessControl, '_missing_rights_reported', set()).clear()
+
+    def test_category_denial_is_logged_once_across_checks(self):
+        self._apply_without_rights(CONFIG)
+
+        with self.assertLogs('grievance_social_protection.access_control', level='ERROR') as logs:
+            for access_type in ('read', 'create', 'update', 'delete', 'restricted_read'):
+                self.assertFalse(
+                    GrievanceAccessControl.check_category_access(self.user_without_vbg, 'VBG', access_type))
+            GrievanceAccessControl.filter_ticket_queryset(Ticket.objects.all(), self.user_without_vbg)
+
+        vbg_records = [record for record in logs.records if "'VBG'" in record.getMessage()]
+        self.assertEqual(len(vbg_records), 1)
+
+    def test_each_category_and_flag_is_logged_once(self):
+        self._apply_without_rights(CONFIG)
+
+        with self.assertLogs('grievance_social_protection.access_control', level='ERROR') as logs:
+            for _ in range(3):
+                GrievanceAccessControl.check_category_access(self.user_without_vbg, 'VBG')
+                GrievanceAccessControl.check_flag_access(self.user_without_vbg, 'confidential')
+
+        self.assertEqual(len(logs.records), 2)
+
+    def test_denial_is_logged_again_after_rights_were_present(self):
+        self._apply_without_rights(CONFIG)
+        with self.assertLogs('grievance_social_protection.access_control', level='ERROR'):
+            GrievanceAccessControl.check_category_access(self.user_without_vbg, 'VBG')
+
+        self._apply_with_rights(CONFIG)
+        GrievanceAccessControl.check_category_access(self.user_without_vbg, 'VBG')
+        self._apply_without_rights(CONFIG)
+
+        with self.assertLogs('grievance_social_protection.access_control', level='ERROR') as logs:
+            GrievanceAccessControl.check_category_access(self.user_without_vbg, 'VBG')
+        self.assertEqual(len(logs.records), 1)
