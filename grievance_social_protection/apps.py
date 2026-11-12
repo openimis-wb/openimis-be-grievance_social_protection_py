@@ -179,6 +179,9 @@ class TicketConfig(AppConfig):
             old = previous.get(name)
             if old and set(old.get('permissions') or []) == set(info.get('permissions') or []):
                 info['generated_rights'] = old.get('generated_rights', {})
+            else:
+                # Ids assigned before the failure belong to rows the rollback removed.
+                info['generated_rights'] = {}
 
     @classmethod
     def __validate_grievance_dict_fields(cls, cfg, field_name):
