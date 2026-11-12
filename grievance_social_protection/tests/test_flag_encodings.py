@@ -3,11 +3,11 @@ from types import SimpleNamespace
 from django.core.exceptions import PermissionDenied
 from django.test import TestCase
 
-from core.test_helpers import create_test_interactive_user
 from grievance_social_protection.access_control import GrievanceAccessControl
 from grievance_social_protection.gql_queries import TicketGQLType
 from grievance_social_protection.models import Ticket
 from grievance_social_protection.tests.test_helpers import (
+    create_user_with_rights,
     setup_grievance_config, restore_grievance_config,
     assign_rights_to_user, get_rights,
 )
@@ -80,14 +80,14 @@ class FlagEncodingAccessTest(TestCase):
         sensitive_rights = get_rights('processed_flags', 'sensitive')
         special_rights = get_rights('processed_flags', 'special')
 
-        cls.user_no_flag = create_test_interactive_user(username='flag_enc_none', roles=[1])
+        cls.user_no_flag = create_user_with_rights('flag_enc_none', [], 'flag_enc_none_base')
         assign_rights_to_user(cls.user_no_flag, [127000], 'FlagEncNoFlagRole')
 
-        cls.user_restricted = create_test_interactive_user(username='flag_enc_restricted', roles=[1])
+        cls.user_restricted = create_user_with_rights('flag_enc_restricted', [], 'flag_enc_restricted_base')
         assign_rights_to_user(
             cls.user_restricted, [127000, sensitive_rights['restricted_read']], 'FlagEncRestrictedRole')
 
-        cls.user_reader = create_test_interactive_user(username='flag_enc_reader', roles=[1])
+        cls.user_reader = create_user_with_rights('flag_enc_reader', [], 'flag_enc_reader_base')
         assign_rights_to_user(
             cls.user_reader, [127000, sensitive_rights['read'], special_rights['read']], 'FlagEncReaderRole')
 
