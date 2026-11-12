@@ -140,14 +140,28 @@ class TicketConfig(AppConfig):
         self.__validate_config(cfg)
 
     def _reload_module_config(self, instance):
+        from .rights import GrievanceRightsManager
+
         cfg = self._merge_with_defaults(instance)
         self.__process_config(cfg)
         self.__build_unified_resolution_times(cfg)
+        previous = {
+            field: getattr(TicketConfig, field)
+            for field in (*cfg, 'generated_rights') if hasattr(TicketConfig, field)
+        }
         self.__load_config(cfg)
         # The reloaded categories and flags carry empty generated_rights until
         # this runs; GrievanceAccessControl denies them in the meantime.
-        from .rights import GrievanceRightsManager
-        GrievanceRightsManager.generate_automatic_rights(TicketConfig)
+        try:
+            GrievanceRightsManager.generate_automatic_rights(TicketConfig)
+        except Exception:
+            # The configuration in force stays the one whose rights exist; a
+            # category that never had rights stays denied by the access control.
+            for field, value in previous.items():
+                setattr(TicketConfig, field, value)
+            logger.exception(
+                "Rights generation failed for the saved configuration; "
+                "the previous configuration and rights remain in force.")
 
     @classmethod
     def __validate_grievance_dict_fields(cls, cfg, field_name):

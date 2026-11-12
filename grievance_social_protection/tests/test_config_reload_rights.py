@@ -214,6 +214,42 @@ class ConfigReloadRightsTest(ReloadRightsTestBase):
         self.assertEqual(
             TicketConfig.unified_resolution_times, {'general': '3,0', 'VBG': '1,6'})
 
+    def test_failed_rights_generation_keeps_previous_configuration_and_rights(self):
+        self._apply_with_rights(CONFIG)
+        ticket = self._ticket('VBG')
+        categories = TicketConfig.processed_categories
+        flags = TicketConfig.processed_flags
+        resolution_times = TicketConfig.unified_resolution_times
+        rights_before = get_rights('processed_categories', 'VBG')
+
+        with mock.patch('grievance_social_protection.rights.GrievanceRightsManager.generate_automatic_rights',
+                        side_effect=RuntimeError('rights table locked')), \
+                self.assertLogs('grievance_social_protection.apps', level='ERROR') as logs:
+            self._save_configuration(CONFIG_WITH_NEW_CATEGORY)
+
+        self.assertEqual(len(logs.records), 1)
+        self.assertTrue(ModuleConfiguration.objects.filter(module=MODULE).exists())
+        self.assertIs(TicketConfig.processed_categories, categories)
+        self.assertIs(TicketConfig.processed_flags, flags)
+        self.assertIs(TicketConfig.unified_resolution_times, resolution_times)
+        self.assertNotIn('Fraude', TicketConfig.processed_categories)
+        self.assertEqual(get_rights('processed_categories', 'VBG'), rights_before)
+        self.assertFalse(GrievanceAccessControl.check_category_access(self.user_without_vbg, 'VBG'))
+        self.assertTrue(GrievanceAccessControl.check_category_access(self.user_with_vbg, 'VBG'))
+        self.assertIn(ticket.id, self._visible_ids(self.user_with_vbg))
+        self.assertNotIn(ticket.id, self._visible_ids(self.user_without_vbg))
+
+    def test_category_without_rights_stays_closed_after_a_failed_generation(self):
+        self._apply_without_rights(CONFIG)
+
+        with mock.patch('grievance_social_protection.rights.GrievanceRightsManager.generate_automatic_rights',
+                        side_effect=RuntimeError('rights table locked')), \
+                self.assertLogs('grievance_social_protection.apps', level='ERROR'):
+            self._save_configuration(CONFIG)
+
+        self.assertFalse(GrievanceAccessControl.check_category_access(self.user_without_vbg, 'VBG'))
+        self.assertFalse(GrievanceAccessControl.check_category_access(self.user_with_vbg, 'VBG'))
+
 
 class MissingRightsLoggingTest(ReloadRightsTestBase):
     """A denial caused by missing generated rights is reported once per
