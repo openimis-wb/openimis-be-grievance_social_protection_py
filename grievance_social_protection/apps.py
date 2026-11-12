@@ -142,6 +142,7 @@ class TicketConfig(AppConfig):
     def _reload_module_config(self, instance):
         cfg = self._merge_with_defaults(instance)
         self.__process_config(cfg)
+        self.__build_unified_resolution_times(cfg)
         self.__load_config(cfg)
         # The reloaded categories and flags carry empty generated_rights until
         # this runs; GrievanceAccessControl denies them in the meantime.
@@ -200,20 +201,21 @@ class TicketConfig(AppConfig):
             if resolution_time:
                 cls.__validate_resolution_time_format(resolution_time, f"category '{category_name}'")
 
-        # Build unified resolution times mapping for backward compatibility
-        unified_resolution = {}
+        cls.__build_unified_resolution_times(cfg)
 
-        # Start with legacy default_resolution
-        if dict_field:
-            unified_resolution.update(dict_field)
-
-        # Override/add with category-specific resolution_times
-        for category_name, category_info in processed_categories.items():
+    @classmethod
+    def __build_unified_resolution_times(cls, cfg):
+        """
+        Store in cfg the resolution times by category: the legacy
+        default_resolution entries, overridden by the category-specific
+        resolution_times of the processed categories.
+        """
+        unified_resolution = dict(cfg.get("default_resolution") or {})
+        for category_name, category_info in cfg.get("processed_categories", {}).items():
             resolution_time = category_info.get('resolution_times')
             if resolution_time:
                 unified_resolution[category_name] = resolution_time
 
-        # Store the unified mapping back
         cfg['unified_resolution_times'] = unified_resolution
 
     @classmethod
