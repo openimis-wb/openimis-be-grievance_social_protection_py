@@ -14,6 +14,15 @@ from .models import Ticket
 logger = logging.getLogger(__name__)
 
 
+class GeneratedRightIdsExhausted(ValueError):
+    """No id is free in the lane of `perm_type`: the ids of the reserved range
+    that end with the type's suffix (PERM_TYPE_SUFFIX)."""
+
+    def __init__(self, perm_type, message=None):
+        self.perm_type = perm_type
+        super().__init__(message or f"No available ID for permission type {perm_type}")
+
+
 class GrievanceRightsManager:
     """Manages automatic rights generation for grievance categories and flags"""
 
@@ -121,8 +130,9 @@ class GrievanceRightsManager:
                         id__range=(cls.GRIEVANCE_RIGHT_BASE, cls.GRIEVANCE_RIGHT_MAX)
                     )
 
-                    used_ids = set(locked_perms.values_list('id', flat=True))
-                    used_ids |= cls._get_granted_ids(used_ids)
+                    permission_ids = set(locked_perms.values_list('id', flat=True))
+                    granted_ids = cls._get_granted_ids(permission_ids)
+                    used_ids = permission_ids | granted_ids
 
                     existing_perms = locked_perms.filter(
                         content_type=ct,
@@ -133,19 +143,25 @@ class GrievanceRightsManager:
 
                     all_rights = {}
 
-                    processed_categories = getattr(app_config, 'processed_categories', {})
-                    for category_name, category_info in processed_categories.items():
-                        cls._process_permissions(
-                            category_name, category_info, False,
-                            existing_by_codename, used_ids, ct, all_rights
-                        )
-
-                    processed_flags = getattr(app_config, 'processed_flags', {})
-                    for flag_name, flag_info in processed_flags.items():
-                        cls._process_permissions(
-                            flag_name, flag_info, True,
-                            existing_by_codename, used_ids, ct, all_rights
-                        )
+                    items = [
+                        ('category', name, info, False)
+                        for name, info in getattr(app_config, 'processed_categories', {}).items()
+                    ] + [
+                        ('flag', name, info, True)
+                        for name, info in getattr(app_config, 'processed_flags', {}).items()
+                    ]
+                    for kind, name, info, is_flag in items:
+                        try:
+                            cls._process_permissions(
+                                name, info, is_flag,
+                                existing_by_codename, used_ids, ct, all_rights
+                            )
+                        except GeneratedRightIdsExhausted as exc:
+                            # Raised inside the atomic block: every permission
+                            # created by this run is rolled back.
+                            raise cls._lane_exhausted(
+                                exc.perm_type, kind, name, permission_ids, granted_ids, used_ids
+                            ) from None
                 # Transaction committed successfully
                 break
             except IntegrityError:
@@ -219,9 +235,26 @@ class GrievanceRightsManager:
             candidate += 10  # Maintain suffix while incrementing
 
         if candidate > cls.GRIEVANCE_RIGHT_MAX:
-            raise ValueError(f"No available ID for permission type {perm_type}")
+            raise GeneratedRightIdsExhausted(perm_type)
 
         return candidate
+
+    @classmethod
+    def _lane_exhausted(cls, perm_type, kind, name, permission_ids, granted_ids, used_ids):
+        """The error for `perm_type`'s lane, with what holds its ids."""
+        lane = set(range(
+            cls.GRIEVANCE_RIGHT_BASE + cls.PERM_TYPE_SUFFIX[perm_type], cls.GRIEVANCE_RIGHT_MAX + 1, 10))
+        by_permissions = len(lane & permission_ids)
+        by_orphan_grants = len(lane & (granted_ids - permission_ids))
+        by_this_run = len(lane & used_ids) - by_permissions - by_orphan_grants
+        return GeneratedRightIdsExhausted(perm_type, (
+            f"No available ID for permission type {perm_type} for {kind} '{name}': the "
+            f"{len(lane)} ids of its lane in {cls.GRIEVANCE_RIGHT_BASE}-{cls.GRIEVANCE_RIGHT_MAX} "
+            f"are held by {by_permissions} existing permissions, {by_orphan_grants} live role "
+            f"grants that reference no permission and {by_this_run} permissions of this run. "
+            f"No permission was created. An id held by a role grant is free once the grant "
+            f"is revoked (validity_to set)."
+        ))
 
     @staticmethod
     def truncate_with_template(template, variable, max_length):
