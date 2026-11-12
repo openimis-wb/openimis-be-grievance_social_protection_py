@@ -145,23 +145,32 @@ class TicketConfig(AppConfig):
         cfg = self._merge_with_defaults(instance)
         self.__process_config(cfg)
         self.__build_unified_resolution_times(cfg)
-        previous = {
-            field: getattr(TicketConfig, field)
-            for field in (*cfg, 'generated_rights') if hasattr(TicketConfig, field)
-        }
+        previous_categories = TicketConfig.processed_categories
+        previous_flags = TicketConfig.processed_flags
+        previous_rights = TicketConfig.generated_rights
         self.__load_config(cfg)
         # The reloaded categories and flags carry empty generated_rights until
         # this runs; GrievanceAccessControl denies them in the meantime.
         try:
             GrievanceRightsManager.generate_automatic_rights(TicketConfig)
         except Exception:
-            # The configuration in force stays the one whose rights exist; a
-            # category that never had rights stays denied by the access control.
-            for field, value in previous.items():
-                setattr(TicketConfig, field, value)
+            # The new configuration stays in force. Only entries whose
+            # permissions are unchanged keep their rights; new or changed
+            # restrictions have none and are denied by the access control.
+            self.__carry_over_rights(TicketConfig.processed_categories, previous_categories)
+            self.__carry_over_rights(TicketConfig.processed_flags, previous_flags)
+            TicketConfig.generated_rights = previous_rights
             logger.exception(
                 "Rights generation failed for the saved configuration; "
-                "the previous configuration and rights remain in force.")
+                "entries with changed permissions are denied until it succeeds.")
+            raise
+
+    @staticmethod
+    def __carry_over_rights(current, previous):
+        for name, info in current.items():
+            old = previous.get(name)
+            if old and set(old.get('permissions') or []) == set(info.get('permissions') or []):
+                info['generated_rights'] = old.get('generated_rights', {})
 
     @classmethod
     def __validate_grievance_dict_fields(cls, cfg, field_name):
