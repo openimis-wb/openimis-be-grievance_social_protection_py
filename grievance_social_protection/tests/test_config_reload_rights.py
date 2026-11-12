@@ -2,6 +2,8 @@ import copy
 import json
 from unittest import mock
 
+from django.contrib.auth.models import Permission
+from django.contrib.contenttypes.models import ContentType
 from django.core.exceptions import PermissionDenied, ValidationError
 from django.test import TestCase
 
@@ -258,6 +260,35 @@ class ConfigReloadRightsTest(ReloadRightsTestBase):
         self.assertNotIn(ticket.id, self._visible_ids(self.user_without_vbg))
         self.assertIn('Fraude', TicketConfig.processed_categories)
         self.assertFalse(GrievanceAccessControl.check_category_access(self.user_with_vbg, 'Fraude'))
+
+    def test_rights_rolled_back_by_a_midloop_failure_are_not_kept(self):
+        self._apply_with_rights(CONFIG)
+        content_type = ContentType.objects.get_for_model(Ticket)
+        used = set(Permission.objects.filter(id__range=(127100, 127999)).values_list('id', flat=True))
+        free = [i for i in range(127100, 128000, 10) if i not in used]
+        # One free 'read' id is left: the first new category takes it, the second fails.
+        for permission_id in free[1:]:
+            Permission.objects.create(
+                id=permission_id, codename=f'filler_{permission_id}', name='filler', content_type=content_type)
+        cfg = copy.deepcopy(CONFIG)
+        cfg['grievance_types'] += [
+            {'name': 'Fraude A', 'permissions': ['read']},
+            {'name': 'Fraude B', 'permissions': ['read']},
+        ]
+
+        with self.assertLogs('grievance_social_protection.apps', level='ERROR'), \
+                self.assertRaises(ValueError):
+            self._save_configuration(cfg)
+
+        self.assertEqual(TicketConfig.processed_categories['Fraude A']['generated_rights'], {})
+        self.assertEqual(TicketConfig.processed_categories['Fraude B']['generated_rights'], {})
+        self.assertFalse(Permission.objects.filter(codename__contains='fraude').exists())
+        # A right created later with the freed id belongs to another category.
+        Permission.objects.create(
+            id=free[0], codename='read_other_grievance', name='other', content_type=content_type)
+        assign_rights_to_user(self.user_without_vbg, [free[0]], 'FreedIdHolder')
+        self.assertFalse(GrievanceAccessControl.check_category_access(self.user_without_vbg, 'Fraude A'))
+        self.assertFalse(self._can_update(self.user_without_vbg, 'Fraude A'))
 
     def test_category_without_rights_stays_closed_after_a_failed_generation(self):
         self._apply_without_rights(CONFIG)
