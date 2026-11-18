@@ -7,6 +7,7 @@ from django.db import models
 from django.db.models import Case, F, Q, Value, When
 from graphene import ObjectType
 from graphene_django import DjangoObjectType
+from simple_history.manager import SIMPLE_HISTORY_REVERSE_ATTR_NAME
 from django.core.exceptions import FieldDoesNotExist, ObjectDoesNotExist, PermissionDenied
 from django.utils.translation import gettext as _
 
@@ -75,15 +76,25 @@ def _ticket_field(path, ticket_prefix=''):
     return None if name in _ALWAYS_FILTERABLE else name
 
 
-def _hiding_q(user, field_name, ticket_prefix=''):
+def _is_ticket_history(queryset):
+    """True for a queryset of versions of the ticket history."""
+    return queryset.model is Ticket.history.model
+
+
+def _hiding_q(user, field_name, ticket_prefix='', history=False):
     """
     Q matching the rows whose ticket hides the field from the user
     (GrievanceAccessControl.hidden_field_q); None when no ticket hides it.
+    With history, the rows are versions of the ticket history: a version
+    hides the field when it hides it or when its ticket now hides it.
     """
     hidden = GrievanceAccessControl.hidden_field_q(user, field_name)
-    if hidden is None or not ticket_prefix:
-        return hidden
-    return Q(**{f'{ticket_prefix}id__in': Ticket.objects.filter(hidden).values('id')})
+    if hidden is None:
+        return None
+    hidden_now = Q(**{f'{ticket_prefix}id__in': Ticket.objects.filter(hidden).values('id')})
+    if ticket_prefix:
+        return hidden_now
+    return hidden | hidden_now if history else hidden
 
 
 def order_without_hidden_fields(queryset, user, ticket_prefix=''):
@@ -96,6 +107,7 @@ def order_without_hidden_fields(queryset, user, ticket_prefix=''):
     repeat nor skip rows.
     """
     ordering = queryset.query.order_by
+    history = not ticket_prefix and _is_ticket_history(queryset)
     masked = []
     for term in ordering:
         if not isinstance(term, str) or term == '?':
@@ -103,7 +115,7 @@ def order_without_hidden_fields(queryset, user, ticket_prefix=''):
             continue
         path = term.lstrip('-')
         field_name = _ticket_field(path, ticket_prefix)
-        hiding = _hiding_q(user, field_name, ticket_prefix) if field_name else None
+        hiding = _hiding_q(user, field_name, ticket_prefix, history) if field_name else None
         if hiding is None:
             masked.append(term)
             continue
@@ -125,6 +137,7 @@ class _TicketFieldVisibilityFilterSet(django_filters.FilterSet):
 
     def filter_queryset(self, queryset):
         user = getattr(self.request, 'user', None) if self.request else None
+        history = not self.ticket_prefix and _is_ticket_history(queryset)
         hiding_by_field = {}
 
         for name, value in self.form.cleaned_data.items():
@@ -139,7 +152,7 @@ class _TicketFieldVisibilityFilterSet(django_filters.FilterSet):
             field = _ticket_field(filter_obj.field_name, self.ticket_prefix)
             if field is not None:
                 if field not in hiding_by_field:
-                    hiding_by_field[field] = _hiding_q(user, field, self.ticket_prefix)
+                    hiding_by_field[field] = _hiding_q(user, field, self.ticket_prefix, history)
                 if hiding_by_field[field] is not None:
                     queryset = queryset.exclude(hiding_by_field[field])
             queryset = filter_obj.filter(queryset, value)
@@ -197,6 +210,18 @@ def _authenticated(user):
     return user is not None and not user.is_anonymous
 
 
+# Attribute of the GraphQL context holding, per ticket id, the category and
+# flags of the ticket as it stands now (TicketGQLType._current_access_target).
+_CURRENT_ACCESS_CACHE = '_grievance_current_ticket_access'
+
+_ACCESS_LEVELS_FROM_LOWEST = (
+    GrievanceAccessControl.ACCESS_NONE,
+    GrievanceAccessControl.ACCESS_RESTRICTED,
+    GrievanceAccessControl.ACCESS_READ,
+    GrievanceAccessControl.ACCESS_FULL,
+)
+
+
 class TicketGQLType(DjangoObjectType):
     client_mutation_id = graphene.String()
     reporter = graphene.JSONString()
@@ -222,9 +247,43 @@ class TicketGQLType(DjangoObjectType):
     )
 
     @staticmethod
+    def _current_access_target(root, info):
+        """
+        (category, flags) of root's ticket as it stands now, read once per
+        request and ticket (_CURRENT_ACCESS_CACHE on info.context); None when
+        the ticket no longer exists.
+        """
+        cache = getattr(info.context, _CURRENT_ACCESS_CACHE, None)
+        if cache is None:
+            cache = {}
+            setattr(info.context, _CURRENT_ACCESS_CACHE, cache)
+        if root.id not in cache:
+            cache[root.id] = Ticket.objects.filter(id=root.id).values_list('category', 'flags').first()
+        return cache[root.id]
+
+    @staticmethod
+    def _access_targets(root, info):
+        """
+        The (category, flags) pairs whose rules apply to root: its own and,
+        for a version of the ticket history, those of the ticket as it stands
+        now; [] for a version whose ticket no longer exists.
+        """
+        if getattr(root, SIMPLE_HISTORY_REVERSE_ATTR_NAME, None) is None:
+            return [(root.category, root.flags)]
+        current = TicketGQLType._current_access_target(root, info)
+        if current is None:
+            return []
+        return [(root.category, root.flags), current]
+
+    @staticmethod
     def resolve_access_level(root, info):
         user = info.context.user
-        return GrievanceAccessControl.get_user_access_level(user, root.category, root.flags)
+        levels = [GrievanceAccessControl.get_user_access_level(user, category, flags)
+                  for category, flags in TicketGQLType._access_targets(root, info)]
+        for level in _ACCESS_LEVELS_FROM_LOWEST:
+            if level in levels:
+                return level
+        return GrievanceAccessControl.ACCESS_NONE
 
     @staticmethod
     def resolve_can_update(root, info):
@@ -233,17 +292,29 @@ class TicketGQLType(DjangoObjectType):
     @staticmethod
     def _should_restrict_field(field_name, root, info):
         """
+        True when the rules of any of the category and flags pairs of
+        _access_targets restrict the field: a version of the ticket history
+        follows the most restrictive of the version and of the ticket now.
+        """
+        targets = TicketGQLType._access_targets(root, info)
+        if not targets:
+            return True
+        return any(TicketGQLType._restricts_field(field_name, info.context.user, category, flags)
+                   for category, flags in targets)
+
+    @staticmethod
+    def _restricts_field(field_name, user, category, flags):
+        """
         Check if a field should be restricted based on user's access level and visible_fields configuration.
 
         Access level is determined by both category and flags (most restrictive wins).
         Visible fields configuration is per-category only. Fields of
         grievance_anonymized_fields are restricted at every access level.
         """
-        user = info.context.user
-        if field_name in GrievanceAccessControl.anonymized_fields(user, root.category):
+        if field_name in GrievanceAccessControl.anonymized_fields(user, category):
             return True
 
-        visible_fields = GrievanceAccessControl.get_visible_fields(user, root.category, root.flags)
+        visible_fields = GrievanceAccessControl.get_visible_fields(user, category, flags)
 
         # None means full or read access: every field is visible
         if visible_fields is None:

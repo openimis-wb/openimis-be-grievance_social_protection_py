@@ -113,6 +113,10 @@ class Query(graphene.ObjectType):
         if show_history or ticket_version:
             if ticket_version:
                 filters.append(Q(version=ticket_version))
+            # A version is listed while its ticket as it stands now is listed
+            # to the user, and while the version itself is (filtered below).
+            listed_now = GrievanceAccessControl.filter_ticket_queryset(model.objects.all(), info.context.user)
+            filters.append(Q(id__in=listed_now.values('id')))
             query = model.history.filter(*filters).all().as_instances()
         else:
             query = model.objects.filter(*filters, is_deleted=False).all()
