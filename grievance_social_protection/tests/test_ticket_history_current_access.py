@@ -6,6 +6,8 @@ its fields are masked when the version or the ticket now hides them, and a
 filter or an ordering on a field the ticket now hides reveals nothing about
 the value of its versions.
 """
+from unittest import mock
+
 from django.core.cache import cache
 from django.db import connection
 from django.test import TestCase
@@ -131,7 +133,9 @@ class TicketHistoryCurrentAccessTest(TestCase):
         def count():
             # The first query of the user loads its rights; the second is counted.
             self._rows(self.restricted_reader, 'showHistory: true')
-            with CaptureQueriesContext(connection) as queries:
+            # The periodic read of the stored configuration is not under test here.
+            with mock.patch.object(TicketConfig, 'reload_if_changed'), \
+                    CaptureQueriesContext(connection) as queries:
                 self._rows(self.restricted_reader, 'showHistory: true')
             return len(queries)
         before = count()

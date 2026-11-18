@@ -1,8 +1,10 @@
 import copy
+import datetime
 import logging
 import sys
 import os
 import threading
+import time
 
 from django.apps import AppConfig
 from django.db import DEFAULT_DB_ALIAS, OperationalError, ProgrammingError, connections, transaction
@@ -13,8 +15,37 @@ logger = logging.getLogger(__name__)
 
 # Serialises the access-time retry of the rights generation ready() skipped.
 _rights_generation_lock = threading.Lock()
+# Serialises the comparison of the stored configuration with the loaded one.
+# Re-entrant: an access check made while a reload runs checks again.
+_config_check_lock = threading.RLock()
+
+# Seconds between two reads of the stored configuration row by a process
+# (TicketConfig.reload_if_changed): a configuration saved by another process
+# takes effect in this one at the start of its first request or task, or at
+# its first access check, after this delay.
+CONFIG_CHECK_INTERVAL_SECONDS = 1
+# TicketConfig.loaded_config_text while the stored row has not been read.
+_CONFIG_NOT_READ = object()
 
 MODULE_NAME = "grievance_social_protection"
+
+
+def _check_config(sender=None, **kwargs):
+    TicketConfig.reload_if_changed()
+
+
+def _connect_config_check():
+    """Check the stored configuration at the start of each request and, where
+    celery is installed, of each task, so that code reading TicketConfig before
+    any access check reads the configuration in force."""
+    from django.core.signals import request_started
+    request_started.connect(_check_config, dispatch_uid=f"{MODULE_NAME}.config_check_request")
+    try:
+        from celery.signals import task_prerun
+    except ImportError:
+        return
+    task_prerun.connect(_check_config, dispatch_uid=f"{MODULE_NAME}.config_check_task")
+
 
 DEFAULT_STRING = 'Default'
 # CRON timedelta: {days},{hours}
@@ -87,6 +118,10 @@ class TicketConfig(AppConfig):
     # True while the rights generation ready() skipped for want of database
     # tables has not run; the first access check runs it once.
     rights_generation_pending = False
+    # Text of the stored configuration row loaded in this process (None: no
+    # row, the defaults) and monotonic time of its last comparison with the row.
+    loaded_config_text = _CONFIG_NOT_READ
+    _config_checked_at = None
 
     @classmethod
     def get_all_permissions(cls):
@@ -118,6 +153,11 @@ class TicketConfig(AppConfig):
         self.__process_config(cfg)
         self.__validate_config(cfg)
         self.__load_config(cfg)
+        if os.environ.get("NO_DATABASE") != "True":
+            try:
+                TicketConfig.loaded_config_text = self._stored_config_text()
+            except (OperationalError, ProgrammingError):
+                TicketConfig.loaded_config_text = _CONFIG_NOT_READ
 
         # Generate rights only when the database is available and ready.
         # Skip during migrations, when NO_DATABASE is set, or when
@@ -135,6 +175,7 @@ class TicketConfig(AppConfig):
         post_migrate.connect(
             self._generate_rights_after_migrate, sender=self,
             dispatch_uid=f"{MODULE_NAME}.generate_rights_after_migrate")
+        _connect_config_check()
         register_validator(MODULE_NAME, self._validate_module_config)
         register_reloader(MODULE_NAME, self._reload_module_config)
 
@@ -154,6 +195,65 @@ class TicketConfig(AppConfig):
         from .rights import GrievanceRightsManager
         GrievanceRightsManager.generate_automatic_rights(TicketConfig)
         TicketConfig.rights_generation_pending = False
+
+    @staticmethod
+    def _stored_config_row():
+        """The configuration row ModuleConfiguration.get_or_default reads."""
+        from django.db.models import Q
+        from core.models import ModuleConfiguration
+        now = datetime.datetime.now()
+        return ModuleConfiguration.objects.filter(
+            Q(is_disabled_until=None) | Q(is_disabled_until__lt=now),
+            layer='be', module=MODULE_NAME,
+        ).first()
+
+    @classmethod
+    def _stored_config_text(cls):
+        row = cls._stored_config_row()
+        return row.config if row else None
+
+    @classmethod
+    def reload_if_changed(cls):
+        """
+        Reload the configuration when the stored row differs from the one this
+        process loaded, as the reloader of ModuleConfiguration.save does in the
+        saving process. Runs at the start of each request and task
+        (_connect_config_check) and at each access check; the row is read
+        at most once per CONFIG_CHECK_INTERVAL_SECONDS. When the rights
+        generation of the reloaded configuration fails, the next access check
+        retries it once (generate_skipped_rights).
+        """
+        checked_at = cls._config_checked_at
+        if checked_at is not None and time.monotonic() - checked_at < CONFIG_CHECK_INTERVAL_SECONDS:
+            return
+        with _config_check_lock:
+            checked_at = cls._config_checked_at
+            now = time.monotonic()
+            if checked_at is not None and now - checked_at < CONFIG_CHECK_INTERVAL_SECONDS:
+                return
+            cls._config_checked_at = now
+            try:
+                # A savepoint: a database error leaves the caller's transaction usable.
+                with transaction.atomic():
+                    row = cls._stored_config_row()
+            except Exception:
+                # No database access (a database error, a test without database):
+                # the loaded configuration stays in force.
+                logger.warning("Grievance configuration not readable; keeping the loaded one.")
+                return
+            text = row.config if row else None
+            if text == cls.loaded_config_text:
+                return
+            from django.apps import apps
+            from core.models import ModuleConfiguration
+            instance = row or ModuleConfiguration(module=MODULE_NAME, layer='be', config='{}')
+            try:
+                apps.get_app_config(MODULE_NAME)._reload_module_config(instance)
+            except Exception:
+                cls.rights_generation_pending = True
+                logger.exception("Reloading the grievance configuration saved by another process failed.")
+            finally:
+                cls.loaded_config_text = text
 
     @classmethod
     def generate_skipped_rights(cls):
@@ -219,6 +319,7 @@ class TicketConfig(AppConfig):
         previous_flags = TicketConfig.processed_flags
         previous_rights = TicketConfig.generated_rights
         self.__load_config(cfg)
+        TicketConfig.loaded_config_text = None if instance._state.adding else instance.config
         # The reloaded categories and flags carry empty generated_rights until
         # this runs; GrievanceAccessControl denies them in the meantime.
         try:
