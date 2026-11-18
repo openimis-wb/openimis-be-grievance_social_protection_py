@@ -665,16 +665,26 @@ class GrievanceAccessControl:
         return reduce(operator.or_, conditions) if conditions else None
 
     @classmethod
-    def filter_comment_queryset(cls, queryset, user):
+    def filter_comment_ticket_queryset(cls, queryset, user):
         """
-        Keep the comments of the non-deleted tickets that filter_ticket_queryset
-        keeps for the user and whose access level is not 'none'.
+        The tickets of queryset whose comments the user reads and may add to:
+        the non-deleted tickets that filter_ticket_queryset keeps for the user
+        and whose access level is not 'none'.
         """
-        from .models import Ticket
-        tickets = cls.filter_ticket_queryset(Ticket.objects.filter(is_deleted=False), user)
+        tickets = cls.filter_ticket_queryset(queryset.filter(is_deleted=False), user)
         no_access = cls.no_access_q(user)
         if no_access is not None:
             tickets = tickets.exclude(no_access)
+        return tickets
+
+    @classmethod
+    def filter_comment_queryset(cls, queryset, user):
+        """
+        Keep the comments of the tickets filter_comment_ticket_queryset keeps
+        for the user.
+        """
+        from .models import Ticket
+        tickets = cls.filter_comment_ticket_queryset(Ticket.objects.all(), user)
         return queryset.filter(ticket_id__in=tickets.values('id'))
 
     @classmethod

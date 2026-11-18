@@ -6,6 +6,7 @@ from django.contrib.contenttypes.models import ContentType
 
 from core.models import User
 from core.validation import BaseModelValidation, ObjectExistsValidationMixin
+from grievance_social_protection.access_control import GrievanceAccessControl
 from grievance_social_protection.models import Ticket, Comment
 
 
@@ -45,7 +46,7 @@ class CommentValidation(ObjectExistsValidationMixin):
     @classmethod
     def validate_create(cls, user, **data):
         errors = [
-            *validate_ticket_exists(data),
+            *validate_ticket_visible(user, data),
         ]
         if errors:
             raise ValidationError(errors)
@@ -58,9 +59,16 @@ class CommentValidation(ObjectExistsValidationMixin):
             raise ValidationError(errors)
 
 
-def validate_ticket_exists(data):
+def validate_ticket_visible(user, data):
+    """The error of a missing ticket unless the ticket is one whose comments
+    the user may read (GrievanceAccessControl.filter_comment_ticket_queryset)
+    or a non-deleted ticket the user attends, so that a refusal does not
+    reveal that the ticket exists."""
     ticket_id = data.get('ticket_id')
-    if not Ticket.objects.filter(id=ticket_id).exists():
+    tickets = Ticket.objects.filter(id=ticket_id)
+    if isinstance(user, User) and tickets.filter(is_deleted=False, attending_staff_id=user.id).exists():
+        return []
+    if not GrievanceAccessControl.filter_comment_ticket_queryset(tickets, user).exists():
         return [{"message": _("validations.CommentValidation.validate_ticket_exists") % {"ticket_id": ticket_id}}]
     return []
 
