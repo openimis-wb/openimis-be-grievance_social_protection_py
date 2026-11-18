@@ -66,7 +66,8 @@ class PipeSubCategoryAccessTest(TestCase):
     def test_ticket_list_keeps_a_pipe_sub_category_for_its_readers(self):
         self.assertEqual(self._listed(self.full_reader), ['ARROW', 'OPEN', 'PIPE'])
         self.assertEqual(self._listed(self.restricted_reader), ['ARROW', 'OPEN', 'PIPE'])
-        self.assertEqual(self._listed(self.admin), ['ARROW', 'OPEN', 'PIPE'])
+        # A superuser also lists 'pipe_secretx|pipe_sub', no configured category.
+        self.assertEqual(self._listed(self.admin), ['ARROW', 'LOOKALIKE', 'OPEN', 'PIPE'])
 
     def test_ticket_list_leaves_out_a_pipe_sub_category_the_user_may_not_read(self):
         self.assertEqual(self._listed(self.base_reader), ['OPEN'])
@@ -89,11 +90,14 @@ class PipeSubCategoryAccessTest(TestCase):
         self.assertEqual(GrievanceAccessControl.get_effective_priority(PIPE), 'High')
 
     def test_queryset_conditions_treat_pipe_and_arrow_alike(self):
+        # 'pipe_secretx|pipe_sub' is no configured category: 'none' for every reader.
         tickets = Ticket.objects.filter(code__startswith=PREFIX)
         self.assertEqual(
-            self._codes(tickets.filter(GrievanceAccessControl.no_access_q(self.base_reader))), ['ARROW', 'PIPE'])
+            self._codes(tickets.filter(GrievanceAccessControl.no_access_q(self.base_reader))),
+            ['ARROW', 'LOOKALIKE', 'PIPE'])
         self.assertEqual(
             self._codes(tickets.filter(GrievanceAccessControl.hidden_field_q(self.restricted_reader, 'description'))),
-            ['ARROW', 'PIPE'])
+            ['ARROW', 'LOOKALIKE', 'PIPE'])
         self.assertEqual(
-            self._codes(tickets.filter(GrievanceAccessControl.hidden_field_q(self.full_reader, 'description'))), [])
+            self._codes(tickets.filter(GrievanceAccessControl.hidden_field_q(self.full_reader, 'description'))),
+            ['LOOKALIKE'])

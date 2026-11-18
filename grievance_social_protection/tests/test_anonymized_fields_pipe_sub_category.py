@@ -68,14 +68,16 @@ class PipeSubCategoryAnonymizedFieldsTest(TestCase):
     def test_the_ticket_resolvers_mask_the_fields_of_a_pipe_sub_category(self):
         for code in ('ARROW', 'PIPE'):
             self.assertEqual(self._resolved(self.reader, code), ('[Restricted]', '[Restricted]', f'title {code}'))
-        for code in ('OPEN', 'LOOKALIKE'):
-            self.assertEqual(self._resolved(self.reader, code), (f'needle {code}', 'sms', f'title {code}'))
+        self.assertEqual(self._resolved(self.reader, 'OPEN'), ('needle OPEN', 'sms', 'title OPEN'))
+        # 'pipe_parentx|pipe_sub' is no configured category: every field is masked.
+        self.assertEqual(self._resolved(self.reader, 'LOOKALIKE'), ('[Restricted]',) * 3)
 
     def test_superuser_reads_the_fields_of_a_pipe_sub_category(self):
         self.assertEqual(self._resolved(self.admin, 'PIPE'), ('needle PIPE', 'sms', 'title PIPE'))
 
     def test_hidden_field_condition_matches_a_pipe_sub_category(self):
+        # The resolvers mask every field of 'pipe_parentx|pipe_sub', no configured category.
         tickets = Ticket.objects.filter(code__startswith=PREFIX)
         for field in ('description', 'channel'):
             hiding = tickets.filter(GrievanceAccessControl.hidden_field_q(self.reader, field))
-            self.assertEqual(sorted(t.code[len(PREFIX):] for t in hiding), ['ARROW', 'PIPE'], field)
+            self.assertEqual(sorted(t.code[len(PREFIX):] for t in hiding), ['ARROW', 'LOOKALIKE', 'PIPE'], field)
