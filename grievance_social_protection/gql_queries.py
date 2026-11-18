@@ -59,16 +59,19 @@ def _ticket_field(path, ticket_prefix=''):
     """
     The ticket field a lookup or ordering path reads, from a queryset of
     tickets (ticket_prefix '') or of comments (COMMENT_TICKET_PREFIX): the
-    first segment after the prefix, a model attname naming its field. None
-    when the path reads no ticket field or a field of _ALWAYS_FILTERABLE.
+    first segment after the prefix, a model attname naming its field; a path
+    under a json_ext key gives 'json_ext.<key>'. None when the path reads no
+    ticket field or a field of _ALWAYS_FILTERABLE.
     """
     if ticket_prefix:
         if not path.startswith(ticket_prefix):
             return None
         path = path[len(ticket_prefix):]
-    name = path.split('__')[0]
+    name, *keys = path.split('__')
     if name == 'pk':
         return None
+    if name == 'json_ext' and keys:
+        return f"{GrievanceAccessControl.JSON_EXT_KEY_PREFIX}{keys[0]}"
     try:
         name = Ticket._meta.get_field(name).name
     except FieldDoesNotExist:
@@ -428,7 +431,18 @@ class TicketGQLType(DjangoObjectType):
 
     @staticmethod
     def resolve_json_ext(root, info):
-        return TicketGQLType._restricted_resolve(root, info, 'json_ext', restricted_value=None)
+        json_ext = TicketGQLType._restricted_resolve(root, info, 'json_ext', restricted_value=None)
+        targets = TicketGQLType._access_targets(root, info)
+        if not targets:
+            return None
+        # A version of the ticket history hides the keys of its own category
+        # and of the category of the ticket as it stands now.
+        hidden_keys = set().union(*(
+            GrievanceAccessControl.anonymized_json_ext_keys(info.context.user, category)
+            for category, _ in targets))
+        if hidden_keys and isinstance(json_ext, dict):
+            return {key: value for key, value in json_ext.items() if key not in hidden_keys}
+        return json_ext
 
     @staticmethod
     def resolve_category(root, info):

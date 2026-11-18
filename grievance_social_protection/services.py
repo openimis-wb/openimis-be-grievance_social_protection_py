@@ -94,11 +94,19 @@ class TicketService(BaseService):
 
     def _drop_anonymized_fields(self, obj_data, ticket):
         """Leave out of obj_data the fields grievance_anonymized_fields hides
-        from the user on the stored ticket. The ticket query returns them
-        masked, so a form that sends them back would store the mask."""
+        from the user on the stored ticket, and give the json_ext keys it hides
+        their stored values. The ticket query returns them masked or without
+        those keys, so a form that sends them back would store the mask or
+        drop the keys."""
         hidden = GrievanceAccessControl.anonymized_fields(self.user, ticket.category)
         if not hidden:
             return
+        hidden_keys = GrievanceAccessControl.anonymized_json_ext_keys(self.user, ticket.category)
+        if hidden_keys and isinstance(obj_data.get('json_ext'), dict):
+            stored = ticket.json_ext if isinstance(ticket.json_ext, dict) else {}
+            json_ext = {key: value for key, value in obj_data['json_ext'].items() if key not in hidden_keys}
+            json_ext.update({key: stored[key] for key in hidden_keys if key in stored})
+            obj_data['json_ext'] = json_ext
         for key in list(obj_data):
             if key in ('id', 'uuid'):
                 continue
